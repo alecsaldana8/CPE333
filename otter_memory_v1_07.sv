@@ -74,7 +74,7 @@
     initial begin
         //$readmemh("performance.mem", memory, 0, 16383);
     
-      $readmemh("../hdl/test_all.mem", memory, 0, 4079);      // memory intitalization file only has  4080 entries
+      $readmemh("../hdl/pipeline_program.mem", memory, 0, 4079);      // memory intitalization file only has  4080 entries
                
     end
     //assign wordAddr2 = MEM_ADDR2[15:2];
