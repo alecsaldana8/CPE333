@@ -144,7 +144,8 @@ module OTTER(input CLK,
         decoded_opcode = opcode_t'(IR[6:0]);
     end
     
-    assign de_inst.opcode = decoded_opcode;
+    assign de_inst.o
+    pcode = decoded_opcode;
 
     REG_FILE OTTER_REG_FILE(
         .CLK(CLK), 
@@ -156,6 +157,55 @@ module OTTER(input CLK,
         .RS1(A), 
         .RS2(B)
     );
+
+
+
+    // init control Units
+    ControlHazardUnit CHU(
+        .CLK(CLK),
+        .de_opcode(de_inst.opcode),
+        .ex_func3(),
+        .BR_EQ(br_eq),
+        .BR_LT(br_lt),
+        .BR_LTU(br_ltu),
+        .ex_I_Immed(),
+        .ex_rs1(),
+        .ex_pc(),
+        .ex_B_Immed(),
+        .branch_flag(),
+        .jalr_pc(),
+        .branch_pc(),
+        .jalr_pc(),
+        .pc_sel(),
+        .flush(),
+        .deflush()
+    );
+
+
+    DataHazardUnit DHU (
+        .opcode(),
+        .de_adr1(),
+        .de_adr2(),
+        .ex_adr1(),
+        .ex_adr2(),
+        .ex_rd(),
+        .mem_rd(),
+        .wb_rd(),
+        .ex_regWrite(),
+        .mem_regWrite(),
+        .wb_regWrite(),
+        .de_rs1_used(),
+        .de_rs2_used(),
+        .ex_rs1_used(),
+        .ex_rs2_used(),
+        .ex_mem_IR(),
+        .de_ex__IR(),
+        .de_ex_aluRes(),
+        .fsel1(),
+        .fsel2(),
+        .load_use_haz()
+    );
+
 
 
     CU_DCDR decoder_unit (
@@ -212,12 +262,12 @@ module OTTER(input CLK,
         
      // this should be FOUR_MUX.sv   
      FourMux SRCB_MUX(
-        .SRCB_MUX0(B),
-        .SRCB_MUX1(I_immed),
-        .SRCB_MUX2(S_immed),
-        .SRCB_MUX3(if_de_pc),
-        .Alu_srcBSEL(opB_sel),
-        .SRCB_OUT(aluBin)
+        .ZERO(B),
+        .ONE(I_immed),
+        .TWO(S_immed),
+        .THREE(if_de_pc),
+        .SEL(opB_sel),
+        .OUT(aluBin)
         );
 
  
