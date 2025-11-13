@@ -50,7 +50,6 @@ typedef struct packed{
 } instr_t;
 
 module OTTER(input CLK,
-    //input INTR,
     input RST,
     input [31:0] IOBUS_IN,
     output [31:0] IOBUS_OUT,
@@ -119,9 +118,9 @@ module OTTER(input CLK,
     );
 
     // this needs to instantiate our PC.sv module    
-    PC PC_TOP (
-        .PC_CLK(CLK), 
-        .PC_RST(RST), 
+    PC OTTER_PC (
+        .CLK(CLK), 
+        .RST(RST), 
         .PC_LD(pcWrite), 
         .PC_IN(pc), 
         .PC_OUT(pc_value)
