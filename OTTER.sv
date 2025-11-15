@@ -1,410 +1,412 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company: 
-// Engineer:  J. Callenes
-// 
-// Create Date: 01/04/2019 04:32:12 PM
-// Design Name: 
-// Module Name: PIPELINED_OTTER_CPU
-// Project Name: 
-// Target Devices: 
-// Tool Versions: 
-// Description: 
-// 
-// Dependencies: 
-// 
+// Company:
+// Engineer:
+//
+// Create Date: 11/02/2023 01:37:36 PM
+// Design Name:
+// Module Name: top_limMCU
+// Project Name:
+// Target Devices:
+// Tool Versions:
+// Description:
+//
+// Dependencies:
+//
 // Revision:
 // Revision 0.01 - File Created
 // Additional Comments:
-// 
+//
 //////////////////////////////////////////////////////////////////////////////////
+typedef enum logic [6:0] {
+LUI = 7'b0110111,
+AUIPC = 7'b0010111,
+JAL = 7'b1101111,
+JALR = 7'b1100111,
+BRANCH = 7'b1100011,
+LOAD = 7'b0000011,
+STORE = 7'b0100011,
+OP_IMM = 7'b0010011,
+OP = 7'b0110011,
+SYSTEM = 7'b1110011
 
- typedef enum logic [6:0] {
-    LUI      = 7'b0110111,
-    AUIPC    = 7'b0010111,
-    JAL      = 7'b1101111,
-    JALR     = 7'b1100111,
-    BRANCH   = 7'b1100011,
-    LOAD     = 7'b0000011,
-    STORE    = 7'b0100011,
-    OP_IMM   = 7'b0010011,
-    OP       = 7'b0110011,
-    SYSTEM   = 7'b1110011
- } opcode_t;
-        
+} opcode_t;
 typedef struct packed{
-    opcode_t opcode;
-    logic [4:0] rs1_addr;
-    logic [4:0] rs2_addr;
-    logic [4:0] rd_addr;
-    logic rs1_used;
-    logic rs2_used;
-    logic rd_used;
-    logic [3:0] alu_fun;
-    logic memWrite;
-    logic memRead2;
-    logic regWrite;
-    logic [1:0] rf_wr_sel;
-    logic [2:0] mem_type;  //sign, size
-    logic [31:0] pc;
+opcode_t opcode;
+logic [4:0] rs1_addr;
+logic [4:0] rs2_addr;
+logic [4:0] rd_addr;
+logic rs1_used;
+logic rs2_used;
+logic rd_used;
+logic [3:0] alu_fun;
+logic WE2;
+logic RDEN2;
+logic regWrite;
+logic [1:0] rf_wr_sel;
+logic mem_type_sign; //sign, size
+logic [1:0] mem_type_size; // should i break up mem type
+logic [31:0] pc;
+// logic [2:0] pcSource;
+logic [1:0] alu_srcA;
+
+logic [2:0] alu_srcB;
+logic [31:0] ir;
+// logic PCWrite;
+// logic RDEN1;
+// logic reset DO I ACTUALLY NEED THIS YET
+//add cntrl signals from FSM
 } instr_t;
+typedef struct packed{
+logic [31:0] I_type;
+logic [31:0] S_type;
+logic [31:0] B_type;
+logic [31:0] U_type;
+logic [31:0] J_type;
+} imm;
+module OTTER(
+input clk,
+input RST,
+input intr,
+input [31:0] iobus_in,
+output [31:0] iobus_out,
+output [31:0] iobus_addr,
+output iobus_wr
+);
+//wires
+wire [31:0] pc;
+wire [31:0] data;
+wire [31:0] ir;
+wire [31:0] I_type, B_type, J_type, U_type, S_type;
+wire [31:0] jal;
+wire [31:0] branch;
+wire [31:0] jalr;
+wire [1:0] rf_wr_sel;
+wire [3:0] alu_fun;
+wire [1:0] alu_srcA;
+wire [2:0] alu_srcB;
+wire [1:0] pcSource;
+wire [31:0] A,B, rsA, rsB, rs1, rs2;
+wire [31:0] dout2, wd_out;
+wire stall,stallA, stallB, regWrite, WE2;
+wire RDEN2;
+wire reset;
+// wire ERR;
+// wire [31:0] mtvec, mepc, csr_RD;
+// wire int_taken, mret_exec, csr_WE, MIE, MPIE;
+wire EQ, LT, LTU;
+reg [31:0] result;
+reg Zero, PCWrite, RDEN1, flush;
+wire [1:0] FwrdSelA, FwrdSelB;
+//linked input-output signals
+assign iobus_addr = result;
+assign iobus_out = rs2;
 
-module OTTER(input CLK,
-    input RST,
-    input [31:0] IOBUS_IN,
-    output [31:0] IOBUS_OUT,
-    output [31:0] IOBUS_ADDR,
-    output logic IOBUS_WR 
-);          
- 
-    logic [6:0] opcode;
-    
-    logic [31:0] pc, 
-                 pc_value, 
-                 next_pc, 
-                 jalr_pc, 
-                 branch_pc, 
-                 jump_pc, 
-                 int_pc,
-                 A,
-                 B,
-                 I_immed,
-                 S_immed,
-                 U_immed,
-                 aluBin,
-                 aluAin,
-                 aluResult,
-                 rfIn,
-                 csr_reg, 
-                 mem_data;
-    
-    logic [31:0] IR;
-    
-    logic memRead1,memRead2;
-    
-    logic pcWrite, 
-          regWrite, 
-          memWrite, 
-          op1_sel, 
-          mem_op, 
-          IorD, 
-          pcWriteCond, 
-          memRead;
-    
-    logic [1:0] opB_sel, rf_sel, wb_sel, mSize;
-    
-    logic [2:0] pc_sel;
-    
-    logic [3:0]alu_fun;
-    
-    logic opA_sel;
-    
-    logic br_taken, br_lt, br_eq, br_ltu;
-              
+assign reset = RST;
 //==== Instruction Fetch ===========================================
-
-     logic [31:0] if_de_pc;
-     
-     assign pcWrite = 1'b1; 	//Hardwired high, assuming no hazards
-     assign memRead1 = 1'b1; 	//Fetch new instruction every cycle
-     
-    FourMux PC_MUX (
-        .ZERO(pc_value + 4),
-        .ONE(jalr_pc),
-        .TWO(branch_pc),
-        .THREE(jump_pc),
-        .SEL(pc_sel),
-        .OUT(pc)
-    );
-
-    // this needs to instantiate our PC.sv module    
-    PC OTTER_PC (
-        .CLK(CLK), 
-        .RST(RST), 
-        .PC_LD(pcWrite), 
-        .PC_IN(pc), 
-        .PC_OUT(pc_value)
-    );
-   
-
-    // PC register
-    always_ff @(posedge CLK) begin
-        if_de_pc <= pc_value;
-    end
-
+assign RDEN1 = 1'b1;
+logic [31:0] if_de_pc;
+//PC MUX
+mux_4t1_nb #(.n(32)) PC_MUX(
+.SEL (pcSource),
+.D0 (pc + 4),
+.D1 (jalr),
+.D2 (branch),
+.D3 (jal),
+// .D4 (mtvec),
+// .D5 (mepc),
+.D_OUT (data)
+);
+//PC register
+reg_nb_sclr #(.n(32)) REG(
+.data_in (data),
+.clk (clk),
+.clr (reset),
+.ld (PCWrite), //put strcut version?? but i dont have one for
+fetch
+.data_out (pc)
+);
+always_comb begin
+if (stall == 1'b0) begin
+PCWrite <= 1'b1;
+end
+else begin
+PCWrite <= 1'b0;
+end
+end
 //==== Instruction Decode ===========================================
+logic [31:0] de_ex_opA;
+logic [31:0] de_ex_opB;
+logic [31:0] de_ex_rs1;
+logic [31:0] de_ex_rs2;
+logic [31:0] if_de_ir;
+logic [31:0] ex_mem_aluRes;
+logic [31:0] wb_dout2;
+logic stalledA;
+logic stalledB;
 
-    logic regWrite_D;
-    
-    instr_t de_ex_inst, de_inst;
+instr_t decode_instr, execute_instr, mem_instr, wb_instr;
+imm decode_imm, execute_imm, mem_imm, wb_imm;
 
-    opcode_t decoded_opcode;
-    
-    always_comb begin
-        decoded_opcode = opcode_t'(IR[6:0]);
-    end
-    
-    assign de_inst.o
-    pcode = decoded_opcode;
+// i dont know what this does
+opcode_t OPCODE;
+//whole lotta assigns
 
-    REG_FILE OTTER_REG_FILE(
-        .CLK(CLK), 
-        .EN(regWrite), 
-        .ADR1(IR[19:15]), 
-        .ADR2(IR[24:20]), 
-        .WA(mem_wb_inst.rd_addr), 
-        .WD(rfIn), 
-        .RS1(A), 
-        .RS2(B)
-    );
+assign OPCODE = opcode_t'(if_de_ir[6:0]);
+assign decode_instr.rs1_addr=if_de_ir[19:15];
+assign decode_instr.rs2_addr=if_de_ir[24:20];
+assign decode_instr.rd_addr=if_de_ir[11:7];
+assign decode_instr.opcode=OPCODE;
+assign decode_instr.alu_fun = alu_fun;
+assign decode_instr.WE2 = WE2;
+assign decode_instr.RDEN2 = RDEN2;
+assign decode_instr.regWrite = regWrite;
+assign decode_instr.rf_wr_sel = rf_wr_sel;
+assign decode_instr.mem_type_sign = if_de_ir[14]; //sign, size
+assign decode_instr.mem_type_size = if_de_ir[13:12];
+assign decode_instr.pc = if_de_pc;
+// assign decode_instr.pcSource = PCSource;
+assign decode_instr.alu_srcA = alu_srcA;
+assign decode_instr.alu_srcB = alu_srcB;
+assign decode_instr.ir = if_de_ir;
+// imm
+assign decode_imm.I_type = I_type;
+assign decode_imm.J_type = J_type;
+assign decode_imm.B_type = B_type;
+assign decode_imm.U_type = U_type;
+assign decode_imm.S_type = S_type;
+//used register signals
+assign decode_instr.rs1_used = decode_instr.rs1_addr != 0
+&& decode_instr.opcode != LUI
+&& decode_instr.opcode != AUIPC
+&& decode_instr.opcode != JAL;
+// && stallA != 1'b1;;
+assign decode_instr.rs2_used = decode_instr.rs2_addr != 0
+&& decode_instr.opcode != OP_IMM
+&& decode_instr.opcode != LUI
+&& decode_instr.opcode != AUIPC
+&& decode_instr.opcode != JAL;
 
+// && stallB != 1'b1;
+assign decode_instr.rd_used = decode_instr.rd_addr != 0
+&& decode_instr.opcode != BRANCH
+&& decode_instr.opcode != STORE;
 
+always_ff@(posedge clk) begin
+if (flush) begin
 
-    // init control Units
-    ControlHazardUnit CHU(
-        .CLK(CLK),
-        .de_opcode(de_inst.opcode),
-        .ex_func3(),
-        .BR_EQ(br_eq),
-        .BR_LT(br_lt),
-        .BR_LTU(br_ltu),
-        .ex_I_Immed(),
-        .ex_rs1(),
-        .ex_pc(),
-        .ex_B_Immed(),
-        .branch_flag(),
-        .jalr_pc(),
-        .branch_pc(),
-        .jalr_pc(),
-        .pc_sel(),
-        .flush(),
-        .deflush()
-    );
+if_de_ir <= 0;
+if_de_pc <= 0;
+end
+else if (stall == 0 ) begin
+if_de_ir <= ir;
+if_de_pc <= pc;
+end
+end
+CU_DCDR my_cu_dcdr(
+// .br_eq (EQ),
+// .br_lt (LT),
+// .br_ltu (LTU),
+.opcode (OPCODE),
+.func7 (if_de_ir[30]),
+.func3 (if_de_ir[14:12]),
+.INT_TAKEN (0),
+.alu_fun (alu_fun),
+// .pcSource (PCSource),
+.alu_srcA (alu_srcA),
+.alu_srcB (alu_srcB),
+.rf_wr_sel (rf_wr_sel), //reg MUX select
+.pcWrite (), //no need for struct?
+.regWrite (regWrite),
+.memWE2 (WE2),
+.memRDEN1 (),
+.memRDEN2 (decode_instr.RDEN2)
+);
 
+// Forwarding Unit (im detecting hazards a cycle early)
+ForwardingUnit my_FU (
+.rs1 (decode_instr.rs1_addr),
+.rs2 (decode_instr.rs2_addr),
+.rs1_used (decode_instr.rs1_used),
+.rs2_used (decode_instr.rs2_used),
+.rd_used (execute_instr.rd_used), // or decode?
+.rd_used_mem (mem_instr.rd_used),
+.stalledA (stalledA),
+.stalledB (stalledB),
+.ExRd (execute_instr.rd_addr),
+.MemRd (mem_instr.rd_addr),
+.ExRegWrite (execute_instr.regWrite),
+.MemRegWrite (mem_instr.regWrite),
+.RDEN2 (execute_instr.RDEN2),
+.pcSource (pcSource), // i dont think flush will be long enough
+.FwrdMuxA (FwrdSelA),
+.FwrdMuxB (FwrdSelB),
+.stall (stall),
+.stallB (stallB),
+.stallA (stallA),
+.flush (flush)
+);
 
-    DataHazardUnit DHU (
-        .opcode(),
-        .de_adr1(),
-        .de_adr2(),
-        .ex_adr1(),
-        .ex_adr2(),
-        .ex_rd(),
-        .mem_rd(),
-        .wb_rd(),
-        .ex_regWrite(),
-        .mem_regWrite(),
-        .wb_regWrite(),
-        .de_rs1_used(),
-        .de_rs2_used(),
-        .ex_rs1_used(),
-        .ex_rs2_used(),
-        .ex_mem_IR(),
-        .de_ex__IR(),
-        .de_ex_aluRes(),
-        .fsel1(),
-        .fsel2(),
-        .load_use_haz()
-    );
-
-
-
-    CU_DCDR decoder_unit (
-        .IR_30(IR[30]),
-        .IR_OPCODE(IR[6:0]),
-        .IR_FUNCT(IR[14:12]),
-        .BR_EQ(br_eq),
-        .BR_LT(br_lt),
-        .BR_LTU(br_ltu),
-        .ALU_FUN(alu_fun),
-        .ALU_SRCA(opA_sel),
-        .ALU_SRCB(opB_sel),
-        .PC_SOURCE(pc_sel),
-        .RF_WR_SEL(wb_sel),
-        .REG_WRITE(regWrite_D),
-        .MEM_WRITE(memWrite),
-        .MEM_READ2(memRead2)
-    );
-            
-    assign I_immed = {{20{IR[31]}}, IR[31:20]};
-    assign S_immed = {{20{IR[31]}}, IR[31:25], IR[11:7]};
-    assign U_immed = {IR[31:12], 12'b0};
-
-    assign de_inst.rs1_addr    = IR[19:15];
-    assign de_inst.rs2_addr    = IR[24:20];
-    assign de_inst.rd_addr     = IR[11:7];
-    assign de_inst.rs1_used    = (IR[19:15] != 0) &&
-                                 (decoded_opcode  != LUI) &&
-                                 (decoded_opcode   != AUIPC) &&
-                                 (decoded_opcode   != JAL);
-    assign de_inst.rs2_used    = (IR[24:20] != 0) ||
-                                 (decoded_opcode   == BRANCH) ||
-                                 (decoded_opcode   == STORE) ||
-                                 (decoded_opcode   == OP);
-    assign de_inst.rd_used     = (IR[11:7] != 0) &&
-                                 (decoded_opcode   != STORE) &&
-                                 (decoded_opcode   != BRANCH);
-    assign de_inst.alu_fun     = alu_fun;
-    assign de_inst.memWrite    = memWrite;
-    assign de_inst.memRead2    = memRead2;
-    assign de_inst.regWrite    = regWrite_D;
-    assign de_inst.rf_wr_sel   = wb_sel;
-    assign de_inst.mem_type    = IR[14:12];  // funct3
-    assign de_inst.pc          = if_de_pc;
-
-
-    // this should be TWO_MUX.sv
-    TwoMux SRCA_MUX (
-        .SRCA_MUX0(A),
-        .SRCA_MUX1(U_immed),
-        .Alu_srcASEL(opA_sel),
-        .SRCA_OUT(aluAin)
-        );
-        
-     // this should be FOUR_MUX.sv   
-     FourMux SRCB_MUX(
-        .ZERO(B),
-        .ONE(I_immed),
-        .TWO(S_immed),
-        .THREE(if_de_pc),
-        .SEL(opB_sel),
-        .OUT(aluBin)
-        );
-
- 
-    logic [31:0] de_ex_opA;
-    logic [31:0] de_ex_opB;
-    logic [31:0] de_ex_IR;
-    logic [31:0] de_ex_rs2;
-    logic [31:0] de_ex_I_immed;
-    logic [31:0] de_ex_pc; 
-    
-
-    always_ff @ (posedge CLK) begin
-        de_ex_inst <= de_inst;
-        de_ex_opA <= aluAin;
-        de_ex_opB <= aluBin;
-        de_ex_IR <= IR;
-        de_ex_rs2 <= B;
-        de_ex_I_immed <= I_immed;
-        de_ex_pc <= if_de_pc;
-    end
-    
-	
+//Fwrd Reg A
+mux_4t1_nb #(.n(32)) my_muxFwrdA(
+.SEL (FwrdSelA),
+.D0 (rs1),
+.D1 (result),
+.D2 (ex_mem_aluRes),
+.D3 (dout2),
+.D_OUT (rsA) );
+//Fwrd Reg B
+mux_4t1_nb #(.n(32)) my_muxFwrdB(
+.SEL (FwrdSelB),
+.D0 (rs2),
+.D1 (result),
+.D2 (ex_mem_aluRes),
+.D3 (dout2),
+.D_OUT (rsB) );
+//alu A MUX (2 input)
+mux_4t1_nb #(.n(32)) my_muxA(
+.SEL (decode_instr.alu_srcA),
+.D0 (rsA),
+.D1 (U_type),
+.D2 (~rsA),
+.D3 (0),
+.D_OUT (de_ex_opA) );
+//alu B MUX
+mux_8t1_nb #(.n(32)) my_muxB(
+.SEL (decode_instr.alu_srcB),
+.D0 (rsB),
+.D1 (I_type),
+.D2 (S_type),
+.D3 (decode_instr.pc),
+//.D4 (csr_RD),
+.D_OUT (de_ex_opB) );
+//imm gen module
+assign I_type = {{21{if_de_ir[31]}}, if_de_ir[30:25], if_de_ir[24:20]};
+assign S_type = {{21{if_de_ir[31]}}, if_de_ir[30:25], if_de_ir[11:7]};
+assign B_type = {{20{if_de_ir[31]}}, if_de_ir[7], if_de_ir[30:25],
+if_de_ir[11:8], 1'b0};
+assign U_type = {if_de_ir[31:12], 12'h000};
+assign J_type = {{12{if_de_ir[31]}}, if_de_ir[19:12], if_de_ir[20],
+if_de_ir[30:21], 1'b0};
 //==== Execute ======================================================
+logic [31:0] ex_mem_rs2;
+logic [31:0] ex_mem_opA;
+logic [31:0] ex_mem_opB;
+logic [31:0] ex_rsB;
 
-     logic [31:0] ex_mem_rs2;
-     logic [2:0] func_3;
-     logic [31:0] ex_mem_aluRes;
-     instr_t ex_mem_inst;
-     logic [31:0] opA_forwarded;
-     logic [31:0] opB_forwarded;
-     
-     // no forwarding in lab 2
-     assign opA_forwarded = de_ex_opA;
-     assign opB_forwarded = de_ex_opB;
-     
-     assign jalr_pc = de_ex_I_immed + de_ex_opA;
-     assign branch_pc = de_ex_inst.pc + {{20{de_ex_IR[31]}}, de_ex_IR[7], de_ex_IR[30:25], de_ex_IR[11:8], 1'b0};
-     assign jump_pc = de_ex_inst.pc + {{12{de_ex_IR[31]}}, de_ex_IR[19:12], de_ex_IR[20], de_ex_IR[30:21], 1'b0};
-     assign int_pc = 0; 
-     
-    // Branch comparison logic
-    always_comb begin
-         br_eq  = (opA_forwarded == opB_forwarded);
-         br_lt  = ($signed(opA_forwarded) < $signed(opB_forwarded));
-         br_ltu = (opA_forwarded < opB_forwarded);
+logic [31:0] ex_ir;
+always_ff@(posedge clk) begin
+if (flush) begin
+execute_instr <= 0;
+execute_imm <= 0;
+de_ex_rs2 <= 0;
+de_ex_rs1 <= 0;
+ex_rsB<=0;
+stalledA <= 0;
+stalledB <= 0;
+end
+else if (stall == 0 ) begin
+execute_instr <= decode_instr;
+execute_imm <= decode_imm;
+de_ex_rs2 <= rs2; //should i do this???
+de_ex_rs1 <= rs1;
+ex_rsB<=rsB;
+stalledA <= 0;
+stalledB <= 0;
+ex_ir<=if_de_ir;
+end
+else begin
+execute_instr.RDEN2 <= decode_instr.RDEN2;
+execute_instr.regWrite <= 0;
+stalledA <= stallA;
+stalledB <= stallB;
+end
+end
 
-    end
+// Creates a RISC-V ALU
+// the ALU
+ALU my_alu(
+.A (ex_mem_opA),
+.B (ex_mem_opB),
+.alu_fun (execute_instr.alu_fun), //execute_instr??
+.result (result),
+.Zero (Zero)
+);
+// branch cond generator
+// it only outputs pcSpurce
+BCG my_bcg(
+.func3 (ex_ir[14:12]),
+.opcode (execute_instr.opcode),
+.rs1 (ex_mem_opA), // ex or dec?
+.rs2 (ex_mem_opB),
+// .br_eq (EQ),
+// .br_lt (LT),
+// .br_ltu (LTU),
+.pcSource(pcSource)
+);
 
-    assign func_3 = de_ex_IR[14:12];
-     
-     // Creates a RISC-V ALU
-    ALU ALU (
-        .SRC_A(opA_forwarded),
-        .SRC_B(opB_forwarded),
-        .ALU_FUN(de_ex_inst.alu_fun),
-        .RESULT(aluResult)
-    );
-     
-    always_ff @(posedge CLK) begin
-        ex_mem_inst.opcode     <= de_ex_inst.opcode;
-        ex_mem_inst.alu_fun    <= de_ex_inst.alu_fun;
-        ex_mem_inst.rs2_addr   <= de_ex_inst.rs2_addr;
-        ex_mem_inst.rd_addr    <= de_ex_inst.rd_addr;
-        ex_mem_inst.rf_wr_sel  <= de_ex_inst.rf_wr_sel;
-        ex_mem_inst.mem_type   <= de_ex_inst.mem_type;
-        ex_mem_inst.memWrite   <= de_ex_inst.memWrite;
-        ex_mem_inst.memRead2   <= de_ex_inst.memRead2;
-        ex_mem_inst.regWrite   <= de_ex_inst.regWrite;
-        ex_mem_inst.pc         <= de_ex_inst.pc;
-    
-        ex_mem_aluRes <= aluResult;
-        ex_mem_rs2    <= de_ex_rs2;
-    end
-
+//branch module
+assign jal = execute_instr.pc + execute_imm.J_type;
+assign jalr = execute_imm.I_type + ex_mem_opA;
+assign branch = execute_instr.pc + execute_imm.B_type;
 
 //==== Memory ======================================================
-     
-    instr_t mem_wb_inst;
-         
-    assign IOBUS_ADDR = ex_mem_aluRes;
-    assign IOBUS_OUT = ex_mem_rs2;
-    assign IOBUS_WR = ex_mem_inst.memWrite;
-    
-    logic [31:0] WB_aluResult, WB_memData, WB_pc_plus_4;
+assign iobus_addr = ex_mem_aluRes;
+assign iobus_out = ex_mem_opB;
+logic [31:0] mem_wb_opB;
+logic [31:0] mem_rsB;
+always_ff@(posedge clk) begin
+mem_wb_opB<=ex_mem_opB;
+mem_instr <= execute_instr;
+mem_imm <= execute_imm;
+ex_mem_rs2 <= de_ex_rs2;
+wb_dout2 <= dout2;
+mem_rsB<=ex_rsB;
+ex_mem_aluRes <= result; //weird
+ex_mem_opA <= de_ex_opA;
+ex_mem_opB <= de_ex_opB;
+end
 
-    
-    Memory OTTER_MEMORY (
-        .MEM_CLK   (CLK),
-        .MEM_RDEN1 (memRead1),
-        .MEM_ADDR1 (pc_value[15:2]),       
-        .MEM_DOUT1 (IR),            
-        .MEM_RDEN2 (ex_mem_inst.memRead2),
-        .MEM_WE2   (ex_mem_inst.memWrite),
-        .MEM_ADDR2 (ex_mem_aluRes),
-        .MEM_DIN2  (ex_mem_rs2),
-        .MEM_SIZE  (ex_mem_inst.mem_type[1:0]),
-        .MEM_SIGN  (ex_mem_inst.mem_type[2]),   
-        .IO_IN     (IOBUS_IN),
-        .IO_WR     (IOBUS_WR),
-        .MEM_DOUT2 (mem_data)
-    );
-    
-    always_ff @(posedge CLK) begin
-        mem_wb_inst.rd_addr   <= ex_mem_inst.rd_addr;
-        mem_wb_inst.rf_wr_sel <= ex_mem_inst.rf_wr_sel;
-        mem_wb_inst.mem_type  <= ex_mem_inst.mem_type;
-        mem_wb_inst.memWrite  <= ex_mem_inst.memWrite;
-        mem_wb_inst.memRead2  <= ex_mem_inst.memRead2;
-        mem_wb_inst.regWrite  <= ex_mem_inst.regWrite;
-        mem_wb_inst.pc        <= ex_mem_inst.pc;
-    
-        WB_aluResult <= ex_mem_aluRes;
-        WB_memData   <= mem_data;
-        WB_pc_plus_4 <= ex_mem_inst.pc + 4;
-    end
-
-
-
-     
+//memory
+Memory OTTER_MEMORY (
+.MEM_CLK (clk),
+.MEM_RDEN1 (RDEN1),
+.MEM_RDEN2 (mem_instr.RDEN2),
+.MEM_WE2 (mem_instr.WE2), //should be mem ...
+.MEM_ADDR1 (pc[15:2]), //14 bit signal
+.MEM_ADDR2 (ex_mem_aluRes),
+.MEM_DIN2 (mem_rsB),
+.MEM_SIZE (mem_instr.mem_type_size), //ir [13:12
+.MEM_SIGN (mem_instr.mem_type_sign), //ir[14]
+.IO_IN (iobus_in),
+.IO_WR (iobus_wr), //unused
+.MEM_DOUT1 (ir),
+.MEM_DOUT2 (dout2) );
 //==== Write Back ==================================================
-     
-     logic [31:0] WB_rfIn;
-     logic [31:0] MEM_PC;
-     
-     assign MEM_PC = mem_wb_inst.pc + 4;
-     
-     FourMux RegMux (.SEL(mem_wb_inst.rf_wr_sel),
-                     .ZERO(MEM_PC),
-                     .ONE(32'b0),
-                     .TWO(mem_data),
-                     .THREE(WB_aluResult),
-                     .OUT(WB_rfIn)
-                     );
-                     
-     
-    assign rfIn = WB_rfIn;               
-    assign regWrite = mem_wb_inst.regWrite; 
-    assign rf_sel = mem_wb_inst.rd_addr;    
-     
+logic [31:0] mem_wb_aluRes;
+always_ff@(posedge clk) begin
+wb_instr <= mem_instr;
+wb_imm <= mem_imm;
+mem_wb_aluRes <= ex_mem_aluRes;
+end
+//REG FILE MUX
+mux_4t1_nb #(.n(32)) my_muxREG(
+
+.SEL (wb_instr.rf_wr_sel),
+.D0 (wb_instr.pc + 4),
+.D1 (csr_RD),
+.D2 (wb_dout2),
+.D3 (mem_wb_aluRes),
+.D_OUT (wd_out) );
+//REG FILE
+RegFile my_regfile (
+.wd (wd_out),
+.clk (clk),
+.en (wb_instr.regWrite),
+.adr1 (decode_instr.rs1_addr),
+.adr2 (decode_instr.rs2_addr),
+.wa (wb_instr.rd_addr), //should this come from the wb struct?
+.rs1 (rs1),
+.rs2 (rs2)
+);
 endmodule
