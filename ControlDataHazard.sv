@@ -76,7 +76,7 @@ module DataHazardUnit(
     //load use hazard
         ex_is_load = (de_ex_IR[6:0] == 7'b0000011);//load instruction opcode
 
-        if ((ex_is_load = (de_ex_IR[6:0] == 7'b0000011)) && (
+        if (ex_is_load && (
             (de_rs1_used && (ex_rd == de_adr1)) ||
             (de_rs2_used && (ex_rd == de_adr2))
         )) begin

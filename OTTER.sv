@@ -1,412 +1,541 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company:
-// Engineer:
-//
-// Create Date: 11/02/2023 01:37:36 PM
-// Design Name:
-// Module Name: top_limMCU
-// Project Name:
-// Target Devices:
-// Tool Versions:
-// Description:
-//
-// Dependencies:
-//
-// Revision:
-// Revision 0.01 - File Created
-// Additional Comments:
-//
+// Company: California Polytechnic University, San Luis Obispo
+// Engineer: Diego Renato Curiel
+// Create Date: 03/02/2023 04:17:51 PM
+// Module Name: OTTER
 //////////////////////////////////////////////////////////////////////////////////
-typedef enum logic [6:0] {
-LUI = 7'b0110111,
-AUIPC = 7'b0010111,
-JAL = 7'b1101111,
-JALR = 7'b1100111,
-BRANCH = 7'b1100011,
-LOAD = 7'b0000011,
-STORE = 7'b0100011,
-OP_IMM = 7'b0010011,
-OP = 7'b0110011,
-SYSTEM = 7'b1110011
 
-} opcode_t;
+  typedef enum logic [6:0] {
+           LUI      = 7'b0110111,
+           AUIPC    = 7'b0010111,
+           JAL      = 7'b1101111,
+           JALR     = 7'b1100111,
+           BRANCH   = 7'b1100011,
+           LOAD     = 7'b0000011,
+           STORE    = 7'b0100011,
+           OP_IMM   = 7'b0010011,
+           OP       = 7'b0110011,
+           SYSTEM   = 7'b1110011
+ } opcode_t;
+        
 typedef struct packed{
-opcode_t opcode;
-logic [4:0] rs1_addr;
-logic [4:0] rs2_addr;
-logic [4:0] rd_addr;
-logic rs1_used;
-logic rs2_used;
-logic rd_used;
-logic [3:0] alu_fun;
-logic WE2;
-logic RDEN2;
-logic regWrite;
-logic [1:0] rf_wr_sel;
-logic mem_type_sign; //sign, size
-logic [1:0] mem_type_size; // should i break up mem type
-logic [31:0] pc;
-// logic [2:0] pcSource;
-logic [1:0] alu_srcA;
-
-logic [2:0] alu_srcB;
-logic [31:0] ir;
-// logic PCWrite;
-// logic RDEN1;
-// logic reset DO I ACTUALLY NEED THIS YET
-//add cntrl signals from FSM
+    opcode_t opcode;
+    logic [4:0] rs1_addr;
+    logic [4:0] rs2_addr;
+    logic [4:0] rd_addr;
+    logic rs1_used;
+    logic rs2_used;
+    logic rd_used;
+    logic [3:0] alu_fun;
+    logic memWrite;
+    logic memRead2;
+    logic regWrite;
+    logic [1:0] rf_wr_sel;
+    logic [2:0] mem_type;  //sign, size
+    logic [2:0] funct3;    // Store funct3 for branches
+    logic [31:0] pc;
 } instr_t;
-typedef struct packed{
-logic [31:0] I_type;
-logic [31:0] S_type;
-logic [31:0] B_type;
-logic [31:0] U_type;
-logic [31:0] J_type;
-} imm;
-module OTTER(
-input clk,
-input RST,
-input intr,
-input [31:0] iobus_in,
-output [31:0] iobus_out,
-output [31:0] iobus_addr,
-output iobus_wr
-);
-//wires
-wire [31:0] pc;
-wire [31:0] data;
-wire [31:0] ir;
-wire [31:0] I_type, B_type, J_type, U_type, S_type;
-wire [31:0] jal;
-wire [31:0] branch;
-wire [31:0] jalr;
-wire [1:0] rf_wr_sel;
-wire [3:0] alu_fun;
-wire [1:0] alu_srcA;
-wire [2:0] alu_srcB;
-wire [1:0] pcSource;
-wire [31:0] A,B, rsA, rsB, rs1, rs2;
-wire [31:0] dout2, wd_out;
-wire stall,stallA, stallB, regWrite, WE2;
-wire RDEN2;
-wire reset;
-// wire ERR;
-// wire [31:0] mtvec, mepc, csr_RD;
-// wire int_taken, mret_exec, csr_WE, MIE, MPIE;
-wire EQ, LT, LTU;
-reg [31:0] result;
-reg Zero, PCWrite, RDEN1, flush;
-wire [1:0] FwrdSelA, FwrdSelB;
-//linked input-output signals
-assign iobus_addr = result;
-assign iobus_out = rs2;
 
-assign reset = RST;
+module OTTER(input CLK,
+              input RST,
+              input [31:0] IOBUS_IN,
+              output [31:0] IOBUS_OUT,
+              output [31:0] IOBUS_ADDR,
+              output logic IOBUS_WR 
+);           
+    // pipeline-specific signals
+    wire [6:0] opcode;
+    wire [31:0] pc, aluResult, mem_data;
+    
+    // Additional signal declarations
+    logic [13:0] imem_addr;
+    
+    // Signal declarations for pipeline (avoid conflicts with struct fields)
+    logic pc_write_enable, reg_write_enable, mem_read_enable;
+    logic mem_write_enable, mem_read2_enable;  // Memory control signals
+    logic [1:0] mem_size;
+    logic [3:0] alu_function;
+    
+    logic br_lt, br_eq, br_ltu;
+    
+    wire [31:0] IR;
+    wire memRead1;
+    
+    // Hazard detection and control signals (declared early for use throughout pipeline)
+    logic [1:0] fsel1, fsel2;  // Forwarding select signals from DataHazardUnit
+    logic load_use_haz;        // Load-use hazard signal
+    logic [1:0] pc_sel;        // PC select from ControlHazardUnit  
+    logic flush, de_flush;     // Flush signals
+    logic stall_pipeline;      // Pipeline stall signal
+    
+    // Forward declarations for pipeline registers used in forwarding
+    logic [31:0] mem_wb_pc;
+    
+    // Memory instantiation
+    Memory OTTER_MEMORY (
+        .MEM_CLK(CLK), 
+        .MEM_RDEN1(memRead1), 
+        .MEM_RDEN2(mem_read2_enable), 
+        .MEM_WE2(mem_write_enable), 
+        .MEM_ADDR1(imem_addr), 
+        .MEM_ADDR2(IOBUS_ADDR), 
+        .MEM_DIN2(IOBUS_OUT), 
+        .MEM_SIZE(mem_size),
+        .MEM_SIGN(ex_mem_inst.mem_type[2]),  // Sign bit from memory type
+        .IO_IN(IOBUS_IN), 
+        .IO_WR(IOBUS_WR), 
+        .MEM_DOUT1(IR), 
+        .MEM_DOUT2(mem_data)
+    );
+              
 //==== Instruction Fetch ===========================================
-assign RDEN1 = 1'b1;
-logic [31:0] if_de_pc;
-//PC MUX
-mux_4t1_nb #(.n(32)) PC_MUX(
-.SEL (pcSource),
-.D0 (pc + 4),
-.D1 (jalr),
-.D2 (branch),
-.D3 (jal),
-// .D4 (mtvec),
-// .D5 (mepc),
-.D_OUT (data)
-);
-//PC register
-reg_nb_sclr #(.n(32)) REG(
-.data_in (data),
-.clk (clk),
-.clr (reset),
-.ld (PCWrite), //put strcut version?? but i dont have one for
-fetch
-.data_out (pc)
-);
-always_comb begin
-if (stall == 1'b0) begin
-PCWrite <= 1'b1;
-end
-else begin
-PCWrite <= 1'b0;
-end
-end
+    
+    // Pipeline registers: IF/DE
+    logic [31:0] if_de_pc, if_de_ir;
+    
+    // PC signals
+    logic [2:0] pc_source;
+    logic [31:0] jalr_target, branch_target, jal_target;
+    logic [31:0] pc_plus_4;
+    
+    assign pc_write_enable = 1'b1; // Always write(no hazards)
+    
+    // PC Module
+    PC OTTER_PC (
+        .CLK(CLK),
+        .RST(RST),
+        .PC_WRITE(pc_write_enable),
+        .PC_SOURCE(pc_source),
+        .JALR(jalr_target),
+        .BRANCH(branch_target),
+        .JAL(jal_target),
+        .MTVEC(32'b0),        
+        .MEPC(32'b0),        
+        .PC_OUT(pc),
+        .PC_OUT_INC(pc_plus_4)
+    );
+    
+    // Instruction Memory
+    assign imem_addr = pc[15:2];  // Word-aligned instruction address
+    assign memRead1 = 1'b1; 	//Fetch new instruction every cycle
+    
+    // IF/DE Pipeline Register (with stall and flush support)
+    always_ff @(posedge CLK) begin
+        if (RST) begin
+            if_de_pc <= 32'b0;
+            if_de_ir <= 32'b0;
+        end else if (flush) begin
+            // Flush pipeline on control hazard
+            if_de_pc <= 32'b0;
+            if_de_ir <= 32'h00000013;  // NOP instruction
+        end else if (!stall_pipeline) begin
+            // Normal operation (no stall)
+            if_de_pc <= pc;
+            if_de_ir <= IR;  // IR comes from memory
+        end
+        // If stall_pipeline is high, keep current values (stall)
+    end
+     
+
+
+
+
+
+     
 //==== Instruction Decode ===========================================
-logic [31:0] de_ex_opA;
-logic [31:0] de_ex_opB;
-logic [31:0] de_ex_rs1;
-logic [31:0] de_ex_rs2;
-logic [31:0] if_de_ir;
-logic [31:0] ex_mem_aluRes;
-logic [31:0] wb_dout2;
-logic stalledA;
-logic stalledB;
+    
+    // DE/EX Pipeline registers
+    logic [31:0] de_ex_opA, de_ex_opB, de_ex_rs2, de_ex_pc;
+    logic [31:0] de_ex_i_imm, de_ex_b_imm, de_ex_j_imm;  
+    instr_t de_ex_inst, de_inst;
+    
+    // Instruction decoding
+    logic [6:0] de_opcode;
+    logic [2:0] de_funct3;
+    logic de_funct7_30;
+    
+    assign de_opcode = if_de_ir[6:0];
+    assign de_funct3 = if_de_ir[14:12];
+    assign de_funct7_30 = if_de_ir[30];
+    assign opcode = de_opcode;  // Connect to existing wire
+    
+    // Decode instruction struct
+    assign de_inst.opcode = opcode_t'(de_opcode);
+    assign de_inst.rs1_addr = if_de_ir[19:15];
+    assign de_inst.rs2_addr = if_de_ir[24:20];
+    assign de_inst.rd_addr = if_de_ir[11:7];
+    assign de_inst.funct3 = de_funct3;
+    assign de_inst.pc = if_de_pc;
+    
+    // Determine register usage
+    assign de_inst.rs1_used = (de_inst.rs1_addr != 5'b0) && 
+                             (de_inst.opcode != LUI) && 
+                             (de_inst.opcode != AUIPC) && 
+                             (de_inst.opcode != JAL);
+                             
+    assign de_inst.rs2_used = (de_inst.rs2_addr != 5'b0) && 
+                             ((de_inst.opcode == OP) || 
+                              (de_inst.opcode == BRANCH) || 
+                              (de_inst.opcode == STORE));
+                              
+    assign de_inst.rd_used = (de_inst.rd_addr != 5'b0) && 
+                            (de_inst.opcode != BRANCH) && 
+                            (de_inst.opcode != STORE);
+    
+    // Register file
+    logic [31:0] rs1_data, rs2_data, reg_write_data;
+    logic [4:0] reg_write_addr;
+    logic reg_write_en;
+    
+    REG_FILE OTTER_REG_FILE (
+        .CLK(CLK),
+        .EN(reg_write_enable),
+        .ADR1(de_inst.rs1_addr),
+        .ADR2(de_inst.rs2_addr), 
+        .WA(reg_write_addr),
+        .WD(reg_write_data),
+        .RS1(rs1_data),
+        .RS2(rs2_data)
+    );
+    
+    // Immediate generation
+    logic [31:0] U_imm, I_imm, S_imm, B_imm, J_imm;
+    
+    ImmediateGenerator OTTER_IMGEN (
+        .IR(if_de_ir[31:7]),
+        .U_TYPE(U_imm),
+        .I_TYPE(I_imm), 
+        .S_TYPE(S_imm),
+        .B_TYPE(B_imm),
+        .J_TYPE(J_imm)
+    );
+    
+    // Control Unit Decoder instantiation
+    logic [2:0] cu_pc_source;  // PC_SOURCE from decoder
+    logic alu_src_a;           // ALU source A select from CU_DCDR
+    logic [1:0] alu_src_b;     // ALU source B select from CU_DCDR
+    
+    CU_DCDR OTTER_CU_DCDR (
+        .IR_30(de_funct7_30),
+        .IR_OPCODE(de_opcode),
+        .IR_FUNCT(de_funct3),
+        .BR_EQ(br_eq),
+        .BR_LT(br_lt),
+        .BR_LTU(br_ltu),
+        .ALU_FUN(de_inst.alu_fun),
+        .ALU_SRCA(alu_src_a),
+        .ALU_SRCB(alu_src_b),
+        .PC_SOURCE(cu_pc_source),
+        .RF_WR_SEL(de_inst.rf_wr_sel),
+        .REG_WRITE(de_inst.regWrite),
+        .MEM_WRITE(de_inst.memWrite),
+        .MEM_READ2(de_inst.memRead2)
+    );
+    
+    // Memory type generation (not handled by CU_DCDR)
+    always_comb begin
+        case (de_inst.opcode)
+            LOAD: begin
+                de_inst.mem_type = {if_de_ir[14], if_de_ir[13:12]}; // sign, size
+            end
+            STORE: begin
+                de_inst.mem_type = {1'b0, if_de_ir[13:12]}; // size only
+            end
+            default: begin
+                de_inst.mem_type = 3'b000;
+            end
+        endcase
+    end
+    
+    // ALU operand selection signals (now generated by CU_DCDR)
+    logic [31:0] alu_op_a_selected, alu_op_b_selected;
+    
+    // ALU Operand A selection using TwoMux (special case for AUIPC)
+    logic [31:0] two_mux_out;
+    TwoMux OTTER_ALU_MUXA (
+        .ALU_SRC_A(alu_src_a),
+        .RS1(rs1_data),
+        .U_TYPE(U_imm),
+        .SRC_A(two_mux_out)
+    );
+    
+    // Special handling for AUIPC which needs PC as operand A
+    assign alu_op_a_selected = (de_inst.opcode == AUIPC) ? if_de_pc : two_mux_out;
+    
+    // ALU Operand B selection using FourMux
+    FourMux OTTER_ALU_MUXB (
+        .SEL(alu_src_b),
+        .ZERO(rs2_data),     // RS2
+        .ONE(I_imm),         // I_TYPE immediate
+        .TWO(S_imm),         // S_TYPE immediate
+        .THREE(U_imm),       // U_TYPE immediate
+        .OUT(alu_op_b_selected)
+    );
+    
+    // DE/EX Pipeline register (with stall and flush support)
+    always_ff @(posedge CLK) begin
+        if (RST) begin
+            de_ex_inst <= '0;
+            de_ex_opA <= 32'b0;
+            de_ex_opB <= 32'b0;
+            de_ex_rs2 <= 32'b0;
+            de_ex_pc <= 32'b0;
+            de_ex_i_imm <= 32'b0;
+            de_ex_b_imm <= 32'b0;
+            de_ex_j_imm <= 32'b0;
+        end else if (de_flush) begin
+            // Flush DE/EX stage on control hazard
+            de_ex_inst <= '0;
+            de_ex_opA <= 32'b0;
+            de_ex_opB <= 32'b0;
+            de_ex_rs2 <= 32'b0;
+            de_ex_pc <= 32'b0;
+            de_ex_i_imm <= 32'b0;
+            de_ex_b_imm <= 32'b0;
+            de_ex_j_imm <= 32'b0;
+        end else if (!stall_pipeline) begin
+            // Normal operation (no stall)
+            de_ex_inst <= de_inst;
+            de_ex_pc <= if_de_pc;
+            de_ex_rs2 <= rs2_data;
+            de_ex_i_imm <= I_imm;
+            de_ex_b_imm <= B_imm;
+            de_ex_j_imm <= J_imm;
+            de_ex_opA <= alu_op_a_selected;
+            de_ex_opB <= alu_op_b_selected;
+        end
+        // If stall_pipeline is high, keep current values (stall)
+    end
 
-instr_t decode_instr, execute_instr, mem_instr, wb_instr;
-imm decode_imm, execute_imm, mem_imm, wb_imm;
-
-// i dont know what this does
-opcode_t OPCODE;
-//whole lotta assigns
-
-assign OPCODE = opcode_t'(if_de_ir[6:0]);
-assign decode_instr.rs1_addr=if_de_ir[19:15];
-assign decode_instr.rs2_addr=if_de_ir[24:20];
-assign decode_instr.rd_addr=if_de_ir[11:7];
-assign decode_instr.opcode=OPCODE;
-assign decode_instr.alu_fun = alu_fun;
-assign decode_instr.WE2 = WE2;
-assign decode_instr.RDEN2 = RDEN2;
-assign decode_instr.regWrite = regWrite;
-assign decode_instr.rf_wr_sel = rf_wr_sel;
-assign decode_instr.mem_type_sign = if_de_ir[14]; //sign, size
-assign decode_instr.mem_type_size = if_de_ir[13:12];
-assign decode_instr.pc = if_de_pc;
-// assign decode_instr.pcSource = PCSource;
-assign decode_instr.alu_srcA = alu_srcA;
-assign decode_instr.alu_srcB = alu_srcB;
-assign decode_instr.ir = if_de_ir;
-// imm
-assign decode_imm.I_type = I_type;
-assign decode_imm.J_type = J_type;
-assign decode_imm.B_type = B_type;
-assign decode_imm.U_type = U_type;
-assign decode_imm.S_type = S_type;
-//used register signals
-assign decode_instr.rs1_used = decode_instr.rs1_addr != 0
-&& decode_instr.opcode != LUI
-&& decode_instr.opcode != AUIPC
-&& decode_instr.opcode != JAL;
-// && stallA != 1'b1;;
-assign decode_instr.rs2_used = decode_instr.rs2_addr != 0
-&& decode_instr.opcode != OP_IMM
-&& decode_instr.opcode != LUI
-&& decode_instr.opcode != AUIPC
-&& decode_instr.opcode != JAL;
-
-// && stallB != 1'b1;
-assign decode_instr.rd_used = decode_instr.rd_addr != 0
-&& decode_instr.opcode != BRANCH
-&& decode_instr.opcode != STORE;
-
-always_ff@(posedge clk) begin
-if (flush) begin
-
-if_de_ir <= 0;
-if_de_pc <= 0;
-end
-else if (stall == 0 ) begin
-if_de_ir <= ir;
-if_de_pc <= pc;
-end
-end
-CU_DCDR my_cu_dcdr(
-// .br_eq (EQ),
-// .br_lt (LT),
-// .br_ltu (LTU),
-.opcode (OPCODE),
-.func7 (if_de_ir[30]),
-.func3 (if_de_ir[14:12]),
-.INT_TAKEN (0),
-.alu_fun (alu_fun),
-// .pcSource (PCSource),
-.alu_srcA (alu_srcA),
-.alu_srcB (alu_srcB),
-.rf_wr_sel (rf_wr_sel), //reg MUX select
-.pcWrite (), //no need for struct?
-.regWrite (regWrite),
-.memWE2 (WE2),
-.memRDEN1 (),
-.memRDEN2 (decode_instr.RDEN2)
-);
-
-// Forwarding Unit (im detecting hazards a cycle early)
-ForwardingUnit my_FU (
-.rs1 (decode_instr.rs1_addr),
-.rs2 (decode_instr.rs2_addr),
-.rs1_used (decode_instr.rs1_used),
-.rs2_used (decode_instr.rs2_used),
-.rd_used (execute_instr.rd_used), // or decode?
-.rd_used_mem (mem_instr.rd_used),
-.stalledA (stalledA),
-.stalledB (stalledB),
-.ExRd (execute_instr.rd_addr),
-.MemRd (mem_instr.rd_addr),
-.ExRegWrite (execute_instr.regWrite),
-.MemRegWrite (mem_instr.regWrite),
-.RDEN2 (execute_instr.RDEN2),
-.pcSource (pcSource), // i dont think flush will be long enough
-.FwrdMuxA (FwrdSelA),
-.FwrdMuxB (FwrdSelB),
-.stall (stall),
-.stallB (stallB),
-.stallA (stallA),
-.flush (flush)
-);
-
-//Fwrd Reg A
-mux_4t1_nb #(.n(32)) my_muxFwrdA(
-.SEL (FwrdSelA),
-.D0 (rs1),
-.D1 (result),
-.D2 (ex_mem_aluRes),
-.D3 (dout2),
-.D_OUT (rsA) );
-//Fwrd Reg B
-mux_4t1_nb #(.n(32)) my_muxFwrdB(
-.SEL (FwrdSelB),
-.D0 (rs2),
-.D1 (result),
-.D2 (ex_mem_aluRes),
-.D3 (dout2),
-.D_OUT (rsB) );
-//alu A MUX (2 input)
-mux_4t1_nb #(.n(32)) my_muxA(
-.SEL (decode_instr.alu_srcA),
-.D0 (rsA),
-.D1 (U_type),
-.D2 (~rsA),
-.D3 (0),
-.D_OUT (de_ex_opA) );
-//alu B MUX
-mux_8t1_nb #(.n(32)) my_muxB(
-.SEL (decode_instr.alu_srcB),
-.D0 (rsB),
-.D1 (I_type),
-.D2 (S_type),
-.D3 (decode_instr.pc),
-//.D4 (csr_RD),
-.D_OUT (de_ex_opB) );
-//imm gen module
-assign I_type = {{21{if_de_ir[31]}}, if_de_ir[30:25], if_de_ir[24:20]};
-assign S_type = {{21{if_de_ir[31]}}, if_de_ir[30:25], if_de_ir[11:7]};
-assign B_type = {{20{if_de_ir[31]}}, if_de_ir[7], if_de_ir[30:25],
-if_de_ir[11:8], 1'b0};
-assign U_type = {if_de_ir[31:12], 12'h000};
-assign J_type = {{12{if_de_ir[31]}}, if_de_ir[19:12], if_de_ir[20],
-if_de_ir[30:21], 1'b0};
+     
+    
+	
+	
 //==== Execute ======================================================
-logic [31:0] ex_mem_rs2;
-logic [31:0] ex_mem_opA;
-logic [31:0] ex_mem_opB;
-logic [31:0] ex_rsB;
+    
+    // EX/MEM Pipeline registers
+    logic [31:0] ex_mem_rs2, ex_mem_alu_result, ex_mem_pc;
+    instr_t ex_mem_inst;
+    
+    // Forwarded operands
+    logic [31:0] opA_forwarded, opB_forwarded;
+    
+    // Data Hazard Unit instantiation
+    DataHazardUnit data_hazard_unit (
+        .opcode({de_ex_inst.opcode}),
+        .de_adr1(de_ex_inst.rs1_addr),
+        .de_adr2(de_ex_inst.rs2_addr),
+        .ex_adr1(de_ex_inst.rs1_addr),
+        .ex_adr2(de_ex_inst.rs2_addr),
+        .ex_rd(de_ex_inst.rd_addr),
+        .mem_rd(ex_mem_inst.rd_addr),
+        .wb_rd(mem_wb_inst.rd_addr),
+        .ex_regWrite(de_ex_inst.regWrite),
+        .mem_regWrite(ex_mem_inst.regWrite),
+        .wb_regWrite(mem_wb_inst.regWrite),
+        .de_rs1_used(de_ex_inst.rs1_used),
+        .de_rs2_used(de_ex_inst.rs2_used),
+        .ex_rs1_used(de_ex_inst.rs1_used),
+        .ex_rs2_used(de_ex_inst.rs2_used),
+        .ex_mem_IR({{25{1'b0}}, ex_mem_inst.opcode}),
+        .de_ex_IR({{25{1'b0}}, de_ex_inst.opcode}),
+        .de_ex_aluRes(aluResult),
+        .fsel1(fsel1),
+        .fsel2(fsel2),
+        .load_use_haz(load_use_haz)
+    );
+    
+    // Control Hazard Unit instantiation
+    logic [31:0] chu_jalr_target, chu_branch_target, chu_jal_target;
+    ControlHazardUnit control_hazard_unit (
+        .CLK(CLK),
+        .de_opcode({de_inst.opcode}),
+        .ex_opcode({de_ex_inst.opcode}),
+        .ex_func3(de_ex_inst.funct3),
+        .BR_EQ(br_eq),
+        .BR_LT(br_lt),
+        .BR_LTU(br_ltu),
+        .ex_I_Immed(de_ex_i_imm),
+        .ex_rs1(opA_forwarded),
+        .ex_pc(de_ex_pc),
+        .ex_B_Immed(de_ex_b_imm),
+        .de_pc(if_de_pc),
+        .de_J_Immed(J_imm),
+        .branch_flag(1'b0),
+        .jalr_pc(chu_jalr_target),
+        .branch_pc(chu_branch_target),
+        .jal_pc(chu_jal_target),
+        .pc_sel(pc_sel),
+        .flush(flush),
+        .de_flush(de_flush)
+    );
+    
+    // Pipeline stall logic
+    assign stall_pipeline = load_use_haz;
+    
+    // Forwarding multiplexers for operand A
+    always_comb begin
+        case (fsel1)
+            2'b00: opA_forwarded = de_ex_opA;           // No forwarding
+            2'b01: opA_forwarded = aluResult;           // Forward from EX stage (current ALU result)
+            2'b10: opA_forwarded = ex_mem_alu_result;   // Forward from MEM stage
+            2'b11: opA_forwarded = mem_wb_pc + 4;       // Forward PC+4 for JAL
+            default: opA_forwarded = de_ex_opA;
+        endcase
+    end
+    
+    // Forwarding multiplexers for operand B  
+    always_comb begin
+        case (fsel2)
+            2'b00: opB_forwarded = de_ex_opB;           // No forwarding
+            2'b01: opB_forwarded = aluResult;           // Forward from EX stage (current ALU result)
+            2'b10: opB_forwarded = ex_mem_alu_result;   // Forward from MEM stage
+            2'b11: opB_forwarded = mem_wb_pc + 4;       // Forward PC+4 for JAL
+            default: opB_forwarded = de_ex_opB;
+        endcase
+    end 
+    
+    // ALU 
+    ALU OTTER_ALU (
+        .SRC_A(opA_forwarded),
+        .SRC_B(opB_forwarded), 
+        .ALU_FUN(de_ex_inst.alu_fun),
+        .RESULT(aluResult)
+    );
+    
+    // Branch condition generation
+    BCG OTTER_BCG (
+        .RS1(opA_forwarded),
+        .RS2(de_ex_rs2),  // Use rs2 for branch comparison
+        .BR_EQ(br_eq),
+        .BR_LT(br_lt),
+        .BR_LTU(br_ltu)
+    );
+    
+    // Branch/Jump target calculation 
+    logic [31:0] bag_jal_target, bag_jalr_target, bag_branch_target;
+    BAG OTTER_BAG (
+        .RS1(opA_forwarded),
+        .I_TYPE(de_ex_i_imm),
+        .J_TYPE(de_ex_j_imm),
+        .B_TYPE(de_ex_b_imm),
+        .FROM_PC(de_ex_pc),
+        .JAL(bag_jal_target),
+        .JALR(bag_jalr_target),
+        .BRANCH(bag_branch_target)
+    );
+    
+    // Select between ControlHazardUnit and BAG outputs based on hazard detection
+    assign jal_target = (flush || de_flush) ? chu_jal_target : bag_jal_target;
+    assign jalr_target = (flush || de_flush) ? chu_jalr_target : bag_jalr_target;
+    assign branch_target = (flush || de_flush) ? chu_branch_target : bag_branch_target;
+    
+    // Branch decision logic
+    logic branch_taken;
+    always_comb begin
+        branch_taken = 1'b0;
+        if (de_ex_inst.opcode == BRANCH) begin
+            case (de_ex_inst.funct3)
+                3'b000: branch_taken = br_eq;   // BEQ
+                3'b001: branch_taken = ~br_eq;  // BNE  
+                3'b100: branch_taken = br_lt;   // BLT
+                3'b101: branch_taken = ~br_lt;  // BGE
+                3'b110: branch_taken = br_ltu;  // BLTU
+                3'b111: branch_taken = ~br_ltu; // BGEU
+                default: branch_taken = 1'b0;
+            endcase
+        end
+    end
+    
+    // PC source selection (controlled by ControlHazardUnit or CU_DCDR)
+    always_comb begin
+        if (flush || de_flush) begin
+            // Use ControlHazardUnit output when hazard detected
+            case (pc_sel)
+                2'b00: pc_source = 3'b000;  // PC+4
+                2'b01: pc_source = 3'b001;  // JALR target
+                2'b10: pc_source = 3'b010;  // Branch target
+                2'b11: pc_source = 3'b011;  // JAL target
+                default: pc_source = 3'b000; // Default PC+4
+            endcase
+        end else begin
+            // Use CU_DCDR output for normal operation
+            pc_source = cu_pc_source;
+        end
+    end
+    
+    // EX/MEM Pipeline register
+    always_ff @(posedge CLK) begin
+        if (RST) begin
+            ex_mem_inst <= '0;
+            ex_mem_alu_result <= 32'b0;
+            ex_mem_rs2 <= 32'b0;
+            ex_mem_pc <= 32'b0;
+        end else begin
+            ex_mem_inst <= de_ex_inst;
+            ex_mem_alu_result <= aluResult;
+            ex_mem_rs2 <= de_ex_rs2;
+            ex_mem_pc <= de_ex_pc;
+        end
+    end
+     
 
-logic [31:0] ex_ir;
-always_ff@(posedge clk) begin
-if (flush) begin
-execute_instr <= 0;
-execute_imm <= 0;
-de_ex_rs2 <= 0;
-de_ex_rs1 <= 0;
-ex_rsB<=0;
-stalledA <= 0;
-stalledB <= 0;
-end
-else if (stall == 0 ) begin
-execute_instr <= decode_instr;
-execute_imm <= decode_imm;
-de_ex_rs2 <= rs2; //should i do this???
-de_ex_rs1 <= rs1;
-ex_rsB<=rsB;
-stalledA <= 0;
-stalledB <= 0;
-ex_ir<=if_de_ir;
-end
-else begin
-execute_instr.RDEN2 <= decode_instr.RDEN2;
-execute_instr.regWrite <= 0;
-stalledA <= stallA;
-stalledB <= stallB;
-end
-end
 
-// Creates a RISC-V ALU
-// the ALU
-ALU my_alu(
-.A (ex_mem_opA),
-.B (ex_mem_opB),
-.alu_fun (execute_instr.alu_fun), //execute_instr??
-.result (result),
-.Zero (Zero)
-);
-// branch cond generator
-// it only outputs pcSpurce
-BCG my_bcg(
-.func3 (ex_ir[14:12]),
-.opcode (execute_instr.opcode),
-.rs1 (ex_mem_opA), // ex or dec?
-.rs2 (ex_mem_opB),
-// .br_eq (EQ),
-// .br_lt (LT),
-// .br_ltu (LTU),
-.pcSource(pcSource)
-);
-
-//branch module
-assign jal = execute_instr.pc + execute_imm.J_type;
-assign jalr = execute_imm.I_type + ex_mem_opA;
-assign branch = execute_instr.pc + execute_imm.B_type;
 
 //==== Memory ======================================================
-assign iobus_addr = ex_mem_aluRes;
-assign iobus_out = ex_mem_opB;
-logic [31:0] mem_wb_opB;
-logic [31:0] mem_rsB;
-always_ff@(posedge clk) begin
-mem_wb_opB<=ex_mem_opB;
-mem_instr <= execute_instr;
-mem_imm <= execute_imm;
-ex_mem_rs2 <= de_ex_rs2;
-wb_dout2 <= dout2;
-mem_rsB<=ex_rsB;
-ex_mem_aluRes <= result; //weird
-ex_mem_opA <= de_ex_opA;
-ex_mem_opB <= de_ex_opB;
-end
-
-//memory
-Memory OTTER_MEMORY (
-.MEM_CLK (clk),
-.MEM_RDEN1 (RDEN1),
-.MEM_RDEN2 (mem_instr.RDEN2),
-.MEM_WE2 (mem_instr.WE2), //should be mem ...
-.MEM_ADDR1 (pc[15:2]), //14 bit signal
-.MEM_ADDR2 (ex_mem_aluRes),
-.MEM_DIN2 (mem_rsB),
-.MEM_SIZE (mem_instr.mem_type_size), //ir [13:12
-.MEM_SIGN (mem_instr.mem_type_sign), //ir[14]
-.IO_IN (iobus_in),
-.IO_WR (iobus_wr), //unused
-.MEM_DOUT1 (ir),
-.MEM_DOUT2 (dout2) );
+    
+    // MEM/WB Pipeline registers
+    logic [31:0] mem_wb_alu_result, mem_wb_mem_data;
+    instr_t mem_wb_inst;
+    
+    // Memory interface
+    assign IOBUS_ADDR = ex_mem_alu_result;
+    assign IOBUS_OUT = ex_mem_rs2;
+    assign mem_write_enable = ex_mem_inst.memWrite;
+    assign mem_read2_enable = ex_mem_inst.memRead2;
+    assign mem_size = ex_mem_inst.mem_type[1:0];  // Memory access size
+    
+    // MEM/WB Pipeline register
+    always_ff @(posedge CLK) begin
+        if (RST) begin
+            mem_wb_inst <= '0;
+            mem_wb_alu_result <= 32'b0;
+            mem_wb_mem_data <= 32'b0;
+            mem_wb_pc <= 32'b0;
+        end else begin
+            mem_wb_inst <= ex_mem_inst;
+            mem_wb_alu_result <= ex_mem_alu_result;
+            mem_wb_mem_data <= mem_data;
+            mem_wb_pc <= ex_mem_pc;
+        end
+    end
+    
+ 
+ 
+ 
+     
 //==== Write Back ==================================================
-logic [31:0] mem_wb_aluRes;
-always_ff@(posedge clk) begin
-wb_instr <= mem_instr;
-wb_imm <= mem_imm;
-mem_wb_aluRes <= ex_mem_aluRes;
-end
-//REG FILE MUX
-mux_4t1_nb #(.n(32)) my_muxREG(
+    
+    // Register write-back connections
+    assign reg_write_enable = mem_wb_inst.regWrite;
+    assign reg_write_addr = mem_wb_inst.rd_addr;
+    
+    // Write-back data selection using FourMux
+    FourMux OTTER_REG_MUX (
+        .SEL(mem_wb_inst.rf_wr_sel),
+        .ZERO(mem_wb_pc + 4),           // PC + 4 (for JAL/JALR)
+        .ONE(32'b0),                    // Unused 
+        .TWO(mem_wb_mem_data),          // Memory data (LOAD)
+        .THREE(mem_wb_alu_result),      // ALU result
+        .OUT(reg_write_data)
+    );
+     
 
-.SEL (wb_instr.rf_wr_sel),
-.D0 (wb_instr.pc + 4),
-.D1 (csr_RD),
-.D2 (wb_dout2),
-.D3 (mem_wb_aluRes),
-.D_OUT (wd_out) );
-//REG FILE
-RegFile my_regfile (
-.wd (wd_out),
-.clk (clk),
-.en (wb_instr.regWrite),
-.adr1 (decode_instr.rs1_addr),
-.adr2 (decode_instr.rs2_addr),
-.wa (wb_instr.rd_addr), //should this come from the wb struct?
-.rs1 (rs1),
-.rs2 (rs2)
-);
+
+ 
+ 
+
+       
+            
 endmodule
