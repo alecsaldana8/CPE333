@@ -1,40 +1,45 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company: Cal Poly San Luis Obispo
-// Engineer: Diego Curiel
-// Create Date: 02/07/2023 10:11:42 AM
+// Company: 
+// Engineer: 
+// 
+// Create Date: 08/12/2024 09:29:48 AM
+// Design Name: 
 // Module Name: ALU
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
 //////////////////////////////////////////////////////////////////////////////////
 
+
 module ALU(
-    input logic [31:0] SRC_A,
-    input logic [31:0] SRC_B,
-    input logic [3:0] ALU_FUN,
-    output logic [31:0] RESULT
+    input [31:0] srcA,
+    input [31:0] srcB,
+    input [3:0] alu_fun,
+    output logic [31:0] alu_result
     );
     
-    //Design the ALU as a MUX to improve processing speed.
-    //The MUX is dependent on the ALU_FUN.
-    //ALU_FUN determines which operation is carried out with the operands A and B.
     always_comb begin
-    case(ALU_FUN)
-    4'b0000: begin RESULT = SRC_A + SRC_B; end //add; no signed designator needed
-    4'b1000: begin RESULT = SRC_A - SRC_B; end //sub; no signed designator needed
-    //logic
-    4'b0110: begin RESULT = SRC_A | SRC_B; end //or
-    4'b0111: begin RESULT = SRC_A & SRC_B; end //and
-    4'b0100: begin RESULT = SRC_A ^ SRC_B; end //xor
-    //shifting
-    4'b0101: begin RESULT = SRC_A >> SRC_B[4:0]; end //srl
-    4'b0001: begin RESULT = SRC_A << SRC_B[4:0]; end //sll
-    4'b1101: begin RESULT = $signed(SRC_A) >>> SRC_B[4:0]; end //sra
-    //setting
-    4'b0010: begin RESULT = $signed(SRC_A) < $signed(SRC_B); end //slt
-    4'b0011: begin RESULT = SRC_A < SRC_B; end //sltu
-    //copy
-    4'b1001: begin RESULT = SRC_A; end //lui-copy
-    default: begin RESULT = 32'd0; end
-    endcase
+        case(alu_fun) 
+        4'b0000: alu_result = srcA+srcB;
+        4'b1000: alu_result = srcA-srcB;
+        4'b0110: alu_result = srcA|srcB;  //and, xor, srl, sll, sra, slt, sltu, lui-copy
+        4'b0111: alu_result = srcA&srcB;
+        4'b0100: alu_result = srcA^srcB;
+        4'b0101: alu_result = srcA>>srcB[4:0];   //only want to shift the 5 least significant bits whenever shifting
+        4'b0001: alu_result = srcA<<srcB[4:0];
+        4'b1101: alu_result = $signed(srcA)>>>srcB[4:0];
+        4'b0010: alu_result = $signed(srcA)<$signed(srcB);
+        4'b0011: alu_result = srcA<srcB;
+        default: alu_result = srcA; //will default to lui_copy, if not matching one of these for some reason
+        endcase
     end
-    
 endmodule

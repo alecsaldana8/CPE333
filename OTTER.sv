@@ -1,541 +1,420 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company: California Polytechnic University, San Luis Obispo
-// Engineer: Diego Renato Curiel
-// Create Date: 03/02/2023 04:17:51 PM
-// Module Name: OTTER
+// Company: 
+// Engineer:  J. Callenes
+// 
+// Create Date: 01/04/2019 04:32:12 PM
+// Design Name: 
+// Module Name: PIPELINED_OTTER_CPU
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
 //////////////////////////////////////////////////////////////////////////////////
 
-  typedef enum logic [6:0] {
-           LUI      = 7'b0110111,
-           AUIPC    = 7'b0010111,
-           JAL      = 7'b1101111,
-           JALR     = 7'b1100111,
-           BRANCH   = 7'b1100011,
-           LOAD     = 7'b0000011,
-           STORE    = 7'b0100011,
-           OP_IMM   = 7'b0010011,
-           OP       = 7'b0110011,
-           SYSTEM   = 7'b1110011
- } opcode_t;
-        
-typedef struct packed{
-    opcode_t opcode;
-    logic [4:0] rs1_addr;
-    logic [4:0] rs2_addr;
-    logic [4:0] rd_addr;
-    logic rs1_used;
-    logic rs2_used;
-    logic rd_used;
-    logic [3:0] alu_fun;
-    logic memWrite;
-    logic memRead2;
-    logic regWrite;
-    logic [1:0] rf_wr_sel;
-    logic [2:0] mem_type;  //sign, size
-    logic [2:0] funct3;    // Store funct3 for branches
-    logic [31:0] pc;
-} instr_t;
-
 module OTTER(input CLK,
-              input RST,
-              input [31:0] IOBUS_IN,
-              output [31:0] IOBUS_OUT,
-              output [31:0] IOBUS_ADDR,
-              output logic IOBUS_WR 
+                input INTR,
+                input RESET,
+                input [31:0] IOBUS_IN,
+                output [31:0] IOBUS_OUT,
+                output [31:0] IOBUS_ADDR,
+                output logic IOBUS_WR 
 );           
-    // pipeline-specific signals
+    
+    // Init Signals
     wire [6:0] opcode;
-    wire [31:0] pc, aluResult, mem_data;
+    wire [31:0] pc, pc_value, next_pc, jalr_pc, branch_pc, jump_pc, int_pc,A,B,I_immed,S_immed,U_immed,aluBin,aluAin,                aluResult,rfIn,csr_reg, mem_data,IR,mem_addr2, mem_dout2,pc_mux_out,ex_result;;
+    wire [31:0] rs1, rs2, utype, itype, stype, btype, de_used_rs1, de_used_rs2;
+    wire memRead1,memRead2,regWrite,memWrite, op1_sel,mem_op,IorD,pcWriteCond,memRead,opA_sel,mem_RDEN2, mem_WE2,de_jump,         de_branch, de_regWrite, de_memWE2, de_memRDEN2,ex_jump,sign;
+    wire [1:0] opB_sel, rf_sel, wb_sel, mSize, de_alu_srca, de_rf_wr_sel, alu_srca_sel, size;
+    wire [2:0] de_alu_srcb, alu_srcb_sel;
+    wire [3:0] alu_fun, de_alu_fun;
     
-    // Additional signal declarations
-    logic [13:0] imem_addr;
-    
-    // Signal declarations for pipeline (avoid conflicts with struct fields)
-    logic pc_write_enable, reg_write_enable, mem_read_enable;
-    logic mem_write_enable, mem_read2_enable;  // Memory control signals
-    logic [1:0] mem_size;
-    logic [3:0] alu_function;
-    
-    logic br_lt, br_eq, br_ltu;
-    
-    wire [31:0] IR;
-    wire memRead1;
-    
-    // Hazard detection and control signals (declared early for use throughout pipeline)
-    logic [1:0] fsel1, fsel2;  // Forwarding select signals from DataHazardUnit
-    logic load_use_haz;        // Load-use hazard signal
-    logic [1:0] pc_sel;        // PC select from ControlHazardUnit  
-    logic flush, de_flush;     // Flush signals
-    logic stall_pipeline;      // Pipeline stall signal
-    
-    // Forward declarations for pipeline registers used in forwarding
-    logic [31:0] mem_wb_pc;
-    
-    // Memory instantiation
-    Memory OTTER_MEMORY (
-        .MEM_CLK(CLK), 
-        .MEM_RDEN1(memRead1), 
-        .MEM_RDEN2(mem_read2_enable), 
-        .MEM_WE2(mem_write_enable), 
-        .MEM_ADDR1(imem_addr), 
-        .MEM_ADDR2(IOBUS_ADDR), 
-        .MEM_DIN2(IOBUS_OUT), 
-        .MEM_SIZE(mem_size),
-        .MEM_SIGN(ex_mem_inst.mem_type[2]),  // Sign bit from memory type
-        .IO_IN(IOBUS_IN), 
-        .IO_WR(IOBUS_WR), 
-        .MEM_DOUT1(IR), 
-        .MEM_DOUT2(mem_data)
-    );
-              
+    logic [31:0] bag_branch, bag_jal, bag_jalr, forwarded_A, forwarded_B, ex_mem_result, ex_forwarded_rs2, jalr_forwarded,                 if_de_pc, if_de_pc_plus4, if_de_ir, rf_write_rd_addr, mem_to_reg_mux_out;
+    logic [31:0] de_ex_rs1, de_ex_pc, de_ex_pc_plus4, jtype, de_ex_opA, de_ex_opB, de_ex_rs2, de_ex_utype, de_ex_itype,                 de_ex_stype, de_ex_btype, de_ex_jtype, de_ex_alu_b;
+    logic [31:0] opA_forwarded, opB_forwarded, ex_mem_pc_plus4, ex_mem_rs2, mem_wb_dout2, mem_wb_pc_plus4, mem_wb_result;
+    logic [6:0] de_ex_opcode;
+    logic [4:0] mem_wb_rd_addr, de_ex_rs1_addr, de_ex_rs2_addr, de_ex_rd_addr, ex_mem_rd_addr;
+    logic [3:0] de_ex_alu_fun;
+    logic [2:0] de_ex_func3;
+    logic [1:0] pc_sel, de_ex_rf_wr_sel, de_ex_size, forward_A_SEL, forward_B_SEL, ex_mem_rf_wr_sel, ex_mem_size,                mem_wb_rf_wr_sel, jalr_sel, forward_rs2;
+    logic pcWrite,ex_mem_memRDEN2, ex_mem_regWrite, ex_mem_memWE2,br_eq, br_lt, br_ltu,de_ex_flushed,flush_de_ex,          flush_if_de,stall,if_de_flushed, flush_next_if_de;
+    logic mem_wb_reg_write,de_ex_jump, de_ex_branch, de_ex_regWrite, de_ex_memWE2, de_ex_memRDEN2, de_store, de_ex_store,          imm_A, imm_B,de_ex_sign, jal_taken, jalr_taken, branch_taken, de_load, de_ex_load, ex_mem_load;
+    logic ex_mem_sign, mem_wb_regWrite, de_ex_stalled;
+    logic ex_mem_aluRes = 0;
+   
 //==== Instruction Fetch ===========================================
-    
-    // Pipeline registers: IF/DE
-    logic [31:0] if_de_pc, if_de_ir;
-    
-    // PC signals
-    logic [2:0] pc_source;
-    logic [31:0] jalr_target, branch_target, jal_target;
-    logic [31:0] pc_plus_4;
-    
-    assign pc_write_enable = 1'b1; // Always write(no hazards)
-    
-    // PC Module
-    PC OTTER_PC (
-        .CLK(CLK),
-        .RST(RST),
-        .PC_WRITE(pc_write_enable),
-        .PC_SOURCE(pc_source),
-        .JALR(jalr_target),
-        .BRANCH(branch_target),
-        .JAL(jal_target),
-        .MTVEC(32'b0),        
-        .MEPC(32'b0),        
-        .PC_OUT(pc),
-        .PC_OUT_INC(pc_plus_4)
-    );
-    
-    // Instruction Memory
-    assign imem_addr = pc[15:2];  // Word-aligned instruction address
-    assign memRead1 = 1'b1; 	//Fetch new instruction every cycle
-    
-    // IF/DE Pipeline Register (with stall and flush support)
-    always_ff @(posedge CLK) begin
-        if (RST) begin
-            if_de_pc <= 32'b0;
-            if_de_ir <= 32'b0;
-        end else if (flush) begin
-            // Flush pipeline on control hazard
-            if_de_pc <= 32'b0;
-            if_de_ir <= 32'h00000013;  // NOP instruction
-        end else if (!stall_pipeline) begin
-            // Normal operation (no stall)
-            if_de_pc <= pc;
-            if_de_ir <= IR;  // IR comes from memory
-        end
-        // If stall_pipeline is high, keep current values (stall)
-    end
+
+     assign if_de_ir = IR;
+     assign pcWrite = ~stall; 	
+     assign memRead1 = 1'b1; 	//Fetch new instruction every cycle
      
-
-
-
-
-
+     always_ff @(posedge CLK) begin
+                if (!stall) begin
+                    if_de_pc <= pc;
+                    if_de_pc_plus4 <= pc+4;
+                end
+                if (flush_next_if_de || flush_de_ex) if_de_flushed = 1;
+                else if_de_flushed = 0;
+     end
+     
+     always_ff @(posedge CLK) begin
+        if (flush_if_de) flush_next_if_de = 1;
+        else flush_next_if_de = 0;
+     end
+     
      
 //==== Instruction Decode ===========================================
-    
-    // DE/EX Pipeline registers
-    logic [31:0] de_ex_opA, de_ex_opB, de_ex_rs2, de_ex_pc;
-    logic [31:0] de_ex_i_imm, de_ex_b_imm, de_ex_j_imm;  
-    instr_t de_ex_inst, de_inst;
-    
-    // Instruction decoding
-    logic [6:0] de_opcode;
-    logic [2:0] de_funct3;
-    logic de_funct7_30;
-    
-    assign de_opcode = if_de_ir[6:0];
-    assign de_funct3 = if_de_ir[14:12];
-    assign de_funct7_30 = if_de_ir[30];
-    assign opcode = de_opcode;  // Connect to existing wire
-    
-    // Decode instruction struct
-    assign de_inst.opcode = opcode_t'(de_opcode);
-    assign de_inst.rs1_addr = if_de_ir[19:15];
-    assign de_inst.rs2_addr = if_de_ir[24:20];
-    assign de_inst.rd_addr = if_de_ir[11:7];
-    assign de_inst.funct3 = de_funct3;
-    assign de_inst.pc = if_de_pc;
-    
-    // Determine register usage
-    assign de_inst.rs1_used = (de_inst.rs1_addr != 5'b0) && 
-                             (de_inst.opcode != LUI) && 
-                             (de_inst.opcode != AUIPC) && 
-                             (de_inst.opcode != JAL);
-                             
-    assign de_inst.rs2_used = (de_inst.rs2_addr != 5'b0) && 
-                             ((de_inst.opcode == OP) || 
-                              (de_inst.opcode == BRANCH) || 
-                              (de_inst.opcode == STORE));
-                              
-    assign de_inst.rd_used = (de_inst.rd_addr != 5'b0) && 
-                            (de_inst.opcode != BRANCH) && 
-                            (de_inst.opcode != STORE);
-    
-    // Register file
-    logic [31:0] rs1_data, rs2_data, reg_write_data;
-    logic [4:0] reg_write_addr;
-    logic reg_write_en;
-    
-    REG_FILE OTTER_REG_FILE (
-        .CLK(CLK),
-        .EN(reg_write_enable),
-        .ADR1(de_inst.rs1_addr),
-        .ADR2(de_inst.rs2_addr), 
-        .WA(reg_write_addr),
-        .WD(reg_write_data),
-        .RS1(rs1_data),
-        .RS2(rs2_data)
-    );
-    
-    // Immediate generation
-    logic [31:0] U_imm, I_imm, S_imm, B_imm, J_imm;
-    
-    ImmediateGenerator OTTER_IMGEN (
-        .IR(if_de_ir[31:7]),
-        .U_TYPE(U_imm),
-        .I_TYPE(I_imm), 
-        .S_TYPE(S_imm),
-        .B_TYPE(B_imm),
-        .J_TYPE(J_imm)
-    );
-    
-    // Control Unit Decoder instantiation
-    logic [2:0] cu_pc_source;  // PC_SOURCE from decoder
-    logic alu_src_a;           // ALU source A select from CU_DCDR
-    logic [1:0] alu_src_b;     // ALU source B select from CU_DCDR
-    
-    CU_DCDR OTTER_CU_DCDR (
-        .IR_30(de_funct7_30),
-        .IR_OPCODE(de_opcode),
-        .IR_FUNCT(de_funct3),
-        .BR_EQ(br_eq),
-        .BR_LT(br_lt),
-        .BR_LTU(br_ltu),
-        .ALU_FUN(de_inst.alu_fun),
-        .ALU_SRCA(alu_src_a),
-        .ALU_SRCB(alu_src_b),
-        .PC_SOURCE(cu_pc_source),
-        .RF_WR_SEL(de_inst.rf_wr_sel),
-        .REG_WRITE(de_inst.regWrite),
-        .MEM_WRITE(de_inst.memWrite),
-        .MEM_READ2(de_inst.memRead2)
-    );
-    
-    // Memory type generation (not handled by CU_DCDR)
-    always_comb begin
-        case (de_inst.opcode)
-            LOAD: begin
-                de_inst.mem_type = {if_de_ir[14], if_de_ir[13:12]}; // sign, size
-            end
-            STORE: begin
-                de_inst.mem_type = {1'b0, if_de_ir[13:12]}; // size only
-            end
-            default: begin
-                de_inst.mem_type = 3'b000;
-            end
-        endcase
-    end
-    
-    // ALU operand selection signals (now generated by CU_DCDR)
-    logic [31:0] alu_op_a_selected, alu_op_b_selected;
-    
-    // ALU Operand A selection using TwoMux (special case for AUIPC)
-    logic [31:0] two_mux_out;
-    TwoMux OTTER_ALU_MUXA (
-        .ALU_SRC_A(alu_src_a),
-        .RS1(rs1_data),
-        .U_TYPE(U_imm),
-        .SRC_A(two_mux_out)
-    );
-    
-    // Special handling for AUIPC which needs PC as operand A
-    assign alu_op_a_selected = (de_inst.opcode == AUIPC) ? if_de_pc : two_mux_out;
-    
-    // ALU Operand B selection using FourMux
-    FourMux OTTER_ALU_MUXB (
-        .SEL(alu_src_b),
-        .ZERO(rs2_data),     // RS2
-        .ONE(I_imm),         // I_TYPE immediate
-        .TWO(S_imm),         // S_TYPE immediate
-        .THREE(U_imm),       // U_TYPE immediate
-        .OUT(alu_op_b_selected)
-    );
-    
-    // DE/EX Pipeline register (with stall and flush support)
-    always_ff @(posedge CLK) begin
-        if (RST) begin
-            de_ex_inst <= '0;
-            de_ex_opA <= 32'b0;
-            de_ex_opB <= 32'b0;
-            de_ex_rs2 <= 32'b0;
-            de_ex_pc <= 32'b0;
-            de_ex_i_imm <= 32'b0;
-            de_ex_b_imm <= 32'b0;
-            de_ex_j_imm <= 32'b0;
-        end else if (de_flush) begin
-            // Flush DE/EX stage on control hazard
-            de_ex_inst <= '0;
-            de_ex_opA <= 32'b0;
-            de_ex_opB <= 32'b0;
-            de_ex_rs2 <= 32'b0;
-            de_ex_pc <= 32'b0;
-            de_ex_i_imm <= 32'b0;
-            de_ex_b_imm <= 32'b0;
-            de_ex_j_imm <= 32'b0;
-        end else if (!stall_pipeline) begin
-            // Normal operation (no stall)
-            de_ex_inst <= de_inst;
-            de_ex_pc <= if_de_pc;
-            de_ex_rs2 <= rs2_data;
-            de_ex_i_imm <= I_imm;
-            de_ex_b_imm <= B_imm;
-            de_ex_j_imm <= J_imm;
-            de_ex_opA <= alu_op_a_selected;
-            de_ex_opB <= alu_op_b_selected;
-        end
-        // If stall_pipeline is high, keep current values (stall)
-    end
 
+    assign utype = {if_de_ir[31:12],12'b0};
+    assign itype = {{21{if_de_ir[31]}}, if_de_ir[30:20]};
+    assign stype = {{21{if_de_ir[31]}},if_de_ir[30:25],if_de_ir[11:7]};
+    assign btype = {{20{if_de_ir[31]}},if_de_ir[7],if_de_ir[30:25],if_de_ir[11:8],1'b0};
+    assign jtype = {{12{if_de_ir[31]}},if_de_ir[19:12],if_de_ir[20],if_de_ir[30:21],1'b0};
+    
+    CU_DCDR Decoder (
+                    .ir_opcode_dcdr(if_de_ir[6:0]),
+                    .ir_funct_dcdr(if_de_ir[14:12]),
+                    .ir_30_dcdr(if_de_ir[30]),
+                    .int_taken_dcdr(1'b0),
+                    .jump(de_jump),
+                    .branch(de_branch),
+                    .store(de_store),
+                    .regWrite(de_regWrite),
+                    .memWE2(de_memWE2),
+                    .memRDEN2(de_memRDEN2),
+                    .alu_fun_dcdr(de_alu_fun),
+                    .alu_scra_dcdr(alu_srca_sel),
+                    .alu_scrb_dcdr(alu_srcb_sel),
+                    .rf_wr_sel_dcdr(de_rf_wr_sel)
+                    );
+    
+    
+    RegFile RegFile (
+                    .w_en(mem_wb_reg_write),
+                    .adr1(if_de_ir[19:15]),
+                    .adr2(if_de_ir[24:20]),
+                    .w_adr(mem_wb_rd_addr),
+                    .w_data(mem_to_reg_mux_out),
+                    .clk(CLK),
+                    .rs1(rs1),
+                    .rs2(rs2)
+                    );
+    
+    TwoMux DE_ALU_A_MUX (
+                      .RS1(rs1),
+                      .U_TYPE(utype),
+                      .ALU_SRC_A(alu_srca_sel[0]),
+                      .SRC_A(de_used_rs1)
+                      );
+                      
+    FourMux DE_ALU_B_MUX (
+                      .ZERO(rs2),
+                      .ONE(itype),
+                      .TWO(stype),
+                      .THREE(if_de_pc),
+                      .SEL(alu_srcb_sel[1:0]),
+                      .OUT(de_used_rs2)
+                      );
+    
+    // Branch conditional generator
+    always_comb begin
+          de_load = 0;
+          branch_taken = 0;
+          
+          if (if_de_ir[6:0] == 7'b0000011) de_load = 1;
+   
+          if (de_ex_branch && !de_ex_flushed) begin
+          // Not jump instruction (branch instead)
+            begin
+              case (de_ex_func3)
+              // BEQ
+              3'b000: begin
+                 branch_taken = forwarded_A == forwarded_B ? 1 : 0;
+              end
+              // BNE
+              3'b001: begin
+                branch_taken = forwarded_A == forwarded_B ? 0 : 1;
+              end
+              // BLT
+              3'b100: begin
+                branch_taken = $signed(forwarded_A) < $signed(forwarded_B) ? 1 : 0;
+              end
+              // BGE
+              3'b101: begin
+                branch_taken = $signed(forwarded_A) < $signed(forwarded_B) ? 0 : 1;
+              end
+              // BLTU
+              3'b110: begin
+                branch_taken = forwarded_A < forwarded_B ? 1 : 0;
+              end
+              // BGEU
+              3'b111: begin
+                branch_taken = forwarded_A < forwarded_B ? 0 : 1;
+              end
+              default: begin
+                branch_taken = 0;
+              end
+              endcase
+          end
+          end
+    end
+    
+    // Jump conditional
+    always_comb begin
+    jal_taken = 0;
+    jalr_taken = 0;
+    if (de_jump == 1 && !flush_next_if_de) begin
+             if (if_de_ir[6:0] == 7'b1101111) begin
+             // JAL opcode
+                jal_taken = 1;
+             end else begin
+             // JALR
+                jalr_taken = 1;
+             end
+         end
+    end
+    
+    HazardUnit HazardUnit(
+               .rs1_in(de_ex_rs1_addr),
+               .rs2_in(de_ex_rs2_addr),
+               .de_rd(de_ex_rd_addr),
+               .de_rd_reg_write(de_ex_regWrite),
+               .ex_rd(ex_mem_rd_addr),
+               .ex_rd_reg_write(ex_mem_regWrite),
+               .mem_rd(mem_wb_rd_addr),
+               .mem_rd_reg_write(mem_wb_reg_write),
+               .load(ex_mem_load),
+               .jal_taken(jal_taken),
+               .jalr_taken(jalr_taken),
+               .branch(branch_taken),
+               .store(de_ex_store),
+               .forward_rs2(forward_rs2),
+               .de_ex_stalled(de_ex_stalled),
+               .de_ex_load(de_ex_load),
+               .imm_A(imm_A),
+               .imm_B(imm_B),
+               .pc_mux_out(pc_sel),
+               .de_rs1_jalr(if_de_ir[19:15]),
+               .jalr_sel(jalr_sel),
+               .flush_if_de(flush_if_de),
+               .flush_de_ex(flush_de_ex),
+               .stall(stall),
+               .alu_sel_1(forward_A_SEL),
+               .alu_sel_2(forward_B_SEL)
+    );
+    
+    
+    always_ff @(posedge CLK) begin
+        if (!stall) begin
+            de_ex_stalled <= 0;
+            // Assign used values
+            de_ex_rs1_addr <= if_de_ir[19:15];
+            de_ex_rs1 <= de_used_rs1;
+            de_ex_alu_b <= de_used_rs2;
+            de_ex_rs2 <= rs2;
+            de_ex_rs2_addr <= if_de_ir[24:20];
+            de_ex_pc <= if_de_pc;
+            de_ex_pc_plus4 <= if_de_pc_plus4;
+            de_ex_opcode <= if_de_ir[6:0];
+            de_ex_func3 <= if_de_ir[14:12];
+            de_ex_sign <= if_de_ir[14];
+            de_ex_size <= if_de_ir[13:12];
+            de_ex_load <= de_load;
+            de_ex_store <= de_store;
+            if (alu_srca_sel != 0) imm_A <= 1;
+            else imm_A <= 0;
+            
+            if (alu_srcb_sel != 0) imm_B <= 1;
+            else imm_B <= 0;
+            
+            // Assign control values
+            de_ex_branch <= de_branch;
+            if (if_de_flushed) begin
+                de_ex_regWrite <= 0;
+                de_ex_memWE2 <= 0;
+                de_ex_flushed <= 1;
+            end
+            else begin
+                de_ex_regWrite <= de_regWrite;
+                de_ex_memWE2 <= de_memWE2;
+                de_ex_flushed <= 0;
+            end
+            de_ex_memRDEN2 <= de_memRDEN2;
+            de_ex_alu_fun <= de_alu_fun;
+            de_ex_rf_wr_sel <= de_rf_wr_sel;
+            
+            // Assign immediate values in DE_EX buffer
+            de_ex_itype <= itype;
+            de_ex_btype <= btype;
+            de_ex_jtype <= jtype;
+            
+            // Assign register addresses
+            de_ex_rd_addr <= if_de_ir[11:7];
+            
+            
+        end else begin
+            de_ex_stalled <= 1;
+            end
+        
+    end
      
     
 	
 	
 //==== Execute ======================================================
-    
-    // EX/MEM Pipeline registers
-    logic [31:0] ex_mem_rs2, ex_mem_alu_result, ex_mem_pc;
-    instr_t ex_mem_inst;
-    
-    // Forwarded operands
-    logic [31:0] opA_forwarded, opB_forwarded;
-    
-    // Data Hazard Unit instantiation
-    DataHazardUnit data_hazard_unit (
-        .opcode({de_ex_inst.opcode}),
-        .de_adr1(de_ex_inst.rs1_addr),
-        .de_adr2(de_ex_inst.rs2_addr),
-        .ex_adr1(de_ex_inst.rs1_addr),
-        .ex_adr2(de_ex_inst.rs2_addr),
-        .ex_rd(de_ex_inst.rd_addr),
-        .mem_rd(ex_mem_inst.rd_addr),
-        .wb_rd(mem_wb_inst.rd_addr),
-        .ex_regWrite(de_ex_inst.regWrite),
-        .mem_regWrite(ex_mem_inst.regWrite),
-        .wb_regWrite(mem_wb_inst.regWrite),
-        .de_rs1_used(de_ex_inst.rs1_used),
-        .de_rs2_used(de_ex_inst.rs2_used),
-        .ex_rs1_used(de_ex_inst.rs1_used),
-        .ex_rs2_used(de_ex_inst.rs2_used),
-        .ex_mem_IR({{25{1'b0}}, ex_mem_inst.opcode}),
-        .de_ex_IR({{25{1'b0}}, de_ex_inst.opcode}),
-        .de_ex_aluRes(aluResult),
-        .fsel1(fsel1),
-        .fsel2(fsel2),
-        .load_use_haz(load_use_haz)
-    );
-    
-    // Control Hazard Unit instantiation
-    logic [31:0] chu_jalr_target, chu_branch_target, chu_jal_target;
-    ControlHazardUnit control_hazard_unit (
-        .CLK(CLK),
-        .de_opcode({de_inst.opcode}),
-        .ex_opcode({de_ex_inst.opcode}),
-        .ex_func3(de_ex_inst.funct3),
-        .BR_EQ(br_eq),
-        .BR_LT(br_lt),
-        .BR_LTU(br_ltu),
-        .ex_I_Immed(de_ex_i_imm),
-        .ex_rs1(opA_forwarded),
-        .ex_pc(de_ex_pc),
-        .ex_B_Immed(de_ex_b_imm),
-        .de_pc(if_de_pc),
-        .de_J_Immed(J_imm),
-        .branch_flag(1'b0),
-        .jalr_pc(chu_jalr_target),
-        .branch_pc(chu_branch_target),
-        .jal_pc(chu_jal_target),
-        .pc_sel(pc_sel),
-        .flush(flush),
-        .de_flush(de_flush)
-    );
-    
-    // Pipeline stall logic
-    assign stall_pipeline = load_use_haz;
-    
-    // Forwarding multiplexers for operand A
-    always_comb begin
-        case (fsel1)
-            2'b00: opA_forwarded = de_ex_opA;           // No forwarding
-            2'b01: opA_forwarded = aluResult;           // Forward from EX stage (current ALU result)
-            2'b10: opA_forwarded = ex_mem_alu_result;   // Forward from MEM stage
-            2'b11: opA_forwarded = mem_wb_pc + 4;       // Forward PC+4 for JAL
-            default: opA_forwarded = de_ex_opA;
-        endcase
-    end
-    
-    // Forwarding multiplexers for operand B  
-    always_comb begin
-        case (fsel2)
-            2'b00: opB_forwarded = de_ex_opB;           // No forwarding
-            2'b01: opB_forwarded = aluResult;           // Forward from EX stage (current ALU result)
-            2'b10: opB_forwarded = ex_mem_alu_result;   // Forward from MEM stage
-            2'b11: opB_forwarded = mem_wb_pc + 4;       // Forward PC+4 for JAL
-            default: opB_forwarded = de_ex_opB;
-        endcase
-    end 
-    
-    // ALU 
-    ALU OTTER_ALU (
-        .SRC_A(opA_forwarded),
-        .SRC_B(opB_forwarded), 
-        .ALU_FUN(de_ex_inst.alu_fun),
-        .RESULT(aluResult)
-    );
-    
-    // Branch condition generation
-    BCG OTTER_BCG (
-        .RS1(opA_forwarded),
-        .RS2(de_ex_rs2),  // Use rs2 for branch comparison
-        .BR_EQ(br_eq),
-        .BR_LT(br_lt),
-        .BR_LTU(br_ltu)
-    );
-    
-    // Branch/Jump target calculation 
-    logic [31:0] bag_jal_target, bag_jalr_target, bag_branch_target;
-    BAG OTTER_BAG (
-        .RS1(opA_forwarded),
-        .I_TYPE(de_ex_i_imm),
-        .J_TYPE(de_ex_j_imm),
-        .B_TYPE(de_ex_b_imm),
-        .FROM_PC(de_ex_pc),
-        .JAL(bag_jal_target),
-        .JALR(bag_jalr_target),
-        .BRANCH(bag_branch_target)
-    );
-    
-    // Select between ControlHazardUnit and BAG outputs based on hazard detection
-    assign jal_target = (flush || de_flush) ? chu_jal_target : bag_jal_target;
-    assign jalr_target = (flush || de_flush) ? chu_jalr_target : bag_jalr_target;
-    assign branch_target = (flush || de_flush) ? chu_branch_target : bag_branch_target;
-    
-    // Branch decision logic
-    logic branch_taken;
-    always_comb begin
-        branch_taken = 1'b0;
-        if (de_ex_inst.opcode == BRANCH) begin
-            case (de_ex_inst.funct3)
-                3'b000: branch_taken = br_eq;   // BEQ
-                3'b001: branch_taken = ~br_eq;  // BNE  
-                3'b100: branch_taken = br_lt;   // BLT
-                3'b101: branch_taken = ~br_lt;  // BGE
-                3'b110: branch_taken = br_ltu;  // BLTU
-                3'b111: branch_taken = ~br_ltu; // BGEU
-                default: branch_taken = 1'b0;
-            endcase
-        end
-    end
-    
-    // PC source selection (controlled by ControlHazardUnit or CU_DCDR)
-    always_comb begin
-        if (flush || de_flush) begin
-            // Use ControlHazardUnit output when hazard detected
-            case (pc_sel)
-                2'b00: pc_source = 3'b000;  // PC+4
-                2'b01: pc_source = 3'b001;  // JALR target
-                2'b10: pc_source = 3'b010;  // Branch target
-                2'b11: pc_source = 3'b011;  // JAL target
-                default: pc_source = 3'b000; // Default PC+4
-            endcase
-        end else begin
-            // Use CU_DCDR output for normal operation
-            pc_source = cu_pc_source;
-        end
-    end
-    
-    // EX/MEM Pipeline register
-    always_ff @(posedge CLK) begin
-        if (RST) begin
-            ex_mem_inst <= '0;
-            ex_mem_alu_result <= 32'b0;
-            ex_mem_rs2 <= 32'b0;
-            ex_mem_pc <= 32'b0;
-        end else begin
-            ex_mem_inst <= de_ex_inst;
-            ex_mem_alu_result <= aluResult;
-            ex_mem_rs2 <= de_ex_rs2;
-            ex_mem_pc <= de_ex_pc;
-        end
-    end
+
+    assign ex_jump = de_ex_jump;
      
+    BRANCH_ADDR_GEN BAG (
+                   .J_TYPE_IMM(jtype),
+                   .B_TYPE_IMM(de_ex_btype),
+                   .I_TYPE_IMM(itype), // Immediately decoded
+                   .rs1(jalr_forwarded),
+                   .PC_B(de_ex_pc),
+                   .PC_J(if_de_pc),
+                   .branch(bag_branch),
+                   .jal(bag_jal),
+                   .jalr(bag_jalr)
+                   );
+                   
+    FourMux JALR_forward (
+                    .ZERO(rs1),
+                    .ONE(ex_result),
+                    .TWO(ex_mem_result),
+                    .THREE(mem_to_reg_mux_out),
+                    .SEL(jalr_sel),
+                    .OUT(jalr_forwarded)
+                    );
+
+    FourMux PC_MUX (.ZERO (pc+4),
+                    .ONE (bag_jalr),
+                    .TWO (bag_branch),
+                    .THREE (bag_jal),
+                    .SEL (pc_sel),
+                    .OUT (pc_mux_out)
+                    );
+                    
+    FourMux ALU_forward_A (
+                    .ZERO (de_ex_rs1),
+                    .ONE (ex_mem_result),
+                    .TWO (mem_to_reg_mux_out),
+                    .THREE (0),
+                    .SEL (forward_A_SEL),
+                    .OUT (forwarded_A)
+                    );
+    
+    FourMux ALU_forward_B (
+                    .ZERO (de_ex_alu_b),
+                    .ONE (ex_mem_result),
+                    .TWO (mem_to_reg_mux_out),
+                    .THREE (0),
+                    .SEL (forward_B_SEL),
+                    .OUT (forwarded_B)
+                    );
+                    
+    FourMux MEM_forward_rs2 (
+                    .ZERO (de_ex_rs2),
+                    .ONE (ex_mem_result),
+                    .TWO (mem_to_reg_mux_out),
+                    .THREE (0),
+                    .SEL (forward_rs2),
+                    .OUT (ex_forwarded_rs2)
+                    );
+
+    PC PC_mod (
+           .PC_RST(RESET),
+           .PC_WE(pcWrite), 
+           .PC_DIN(pc_mux_out),
+           .CLK(CLK), 
+           .PC_COUNT(pc)
+           );
+    
+    ALU ALU (
+            .srcA(forwarded_A),
+            .srcB(forwarded_B),
+            .alu_fun(de_ex_alu_fun),
+            .alu_result(ex_result)
+        );
+        
+    always_ff @(posedge CLK) begin
+        ex_mem_result <= ex_result;
+        ex_mem_rs2 <= ex_forwarded_rs2;
+        ex_mem_load <= de_ex_load;
+        
+        ex_mem_memRDEN2 <= de_ex_memRDEN2;
+        ex_mem_regWrite <= de_ex_regWrite;
+        ex_mem_rf_wr_sel <= de_ex_rf_wr_sel;
+        ex_mem_memWE2 <= de_ex_memWE2;
+        
+        ex_mem_size <= de_ex_size;
+        ex_mem_sign <= de_ex_sign;
+        
+        ex_mem_pc_plus4 <= de_ex_pc;
+        ex_mem_rd_addr <= de_ex_rd_addr;
+        
+    end
 
 
 
 //==== Memory ======================================================
-    
-    // MEM/WB Pipeline registers
-    logic [31:0] mem_wb_alu_result, mem_wb_mem_data;
-    instr_t mem_wb_inst;
-    
-    // Memory interface
-    assign IOBUS_ADDR = ex_mem_alu_result;
+     
+    assign mem_RDEN2 = ex_mem_memRDEN2;
+    assign mem_WE2 = ex_mem_memWE2;
+    assign mem_addr2 = ex_mem_result;
+    assign size = ex_mem_size;
+    assign sign = ex_mem_sign;
+    assign IOBUS_ADDR = ex_mem_result;
     assign IOBUS_OUT = ex_mem_rs2;
-    assign mem_write_enable = ex_mem_inst.memWrite;
-    assign mem_read2_enable = ex_mem_inst.memRead2;
-    assign mem_size = ex_mem_inst.mem_type[1:0];  // Memory access size
+    assign mem_wb_dout2 = mem_dout2;
     
-    // MEM/WB Pipeline register
+    
+    OTTER_mem_byte OTTER_MEMORY(
+                .MEM_CLK(CLK),
+                .MEM_ADDR1(pc),
+                .MEM_ADDR2(mem_addr2),
+                .MEM_DIN2(ex_mem_rs2),
+                .MEM_WRITE2(mem_WE2),
+                .MEM_READ1(memRead1 && !stall),
+                .MEM_READ2(mem_RDEN2),
+                .MEM_DOUT1(IR),
+                .MEM_DOUT2(mem_dout2),
+                .IO_IN(IOBUS_IN),
+                .IO_WR(IOBUS_WR),
+                .MEM_SIZE(size),
+                .MEM_SIGN(sign)
+                );
+    
     always_ff @(posedge CLK) begin
-        if (RST) begin
-            mem_wb_inst <= '0;
-            mem_wb_alu_result <= 32'b0;
-            mem_wb_mem_data <= 32'b0;
-            mem_wb_pc <= 32'b0;
-        end else begin
-            mem_wb_inst <= ex_mem_inst;
-            mem_wb_alu_result <= ex_mem_alu_result;
-            mem_wb_mem_data <= mem_data;
-            mem_wb_pc <= ex_mem_pc;
-        end
+        mem_wb_rd_addr <= ex_mem_rd_addr;
+        mem_wb_pc_plus4 <= ex_mem_pc_plus4;
+        mem_wb_result <= ex_mem_result;
+        
+        mem_wb_rf_wr_sel <= ex_mem_rf_wr_sel;
+        mem_wb_regWrite <= ex_mem_regWrite;
+        
     end
-    
- 
- 
  
      
 //==== Write Back ==================================================
+
+    assign rf_write_rd_addr = mem_wb_rd_addr;
+    assign mem_wb_reg_write = mem_wb_regWrite;
     
-    // Register write-back connections
-    assign reg_write_enable = mem_wb_inst.regWrite;
-    assign reg_write_addr = mem_wb_inst.rd_addr;
-    
-    // Write-back data selection using FourMux
-    FourMux OTTER_REG_MUX (
-        .SEL(mem_wb_inst.rf_wr_sel),
-        .ZERO(mem_wb_pc + 4),           // PC + 4 (for JAL/JALR)
-        .ONE(32'b0),                    // Unused 
-        .TWO(mem_wb_mem_data),          // Memory data (LOAD)
-        .THREE(mem_wb_alu_result),      // ALU result
-        .OUT(reg_write_data)
-    );
-     
-
-
- 
- 
-
-       
+    FourMux RF_WRITE_MUX (
+               .ZERO(ex_mem_pc_plus4),
+               .ONE(0),
+               .TWO(mem_wb_dout2),
+               .THREE(mem_wb_result),
+               .SEL(mem_wb_rf_wr_sel),
+               .OUT(mem_to_reg_mux_out)
+               );
             
 endmodule

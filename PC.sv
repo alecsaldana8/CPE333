@@ -1,37 +1,39 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company: California Polytechnic University, San Luis Obispo
-// Engineer: Diego Renato Curiel
-// Create Date: 01/24/2023 09:30:07 AM
+// Company: 
+// Engineer: 
+// 
+// Create Date: 08/01/2024 09:23:10 AM
+// Design Name: 
 // Module Name: PC
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
+// Revision:
+// Revision 0.01 - File Created
+// Additional Comments:
+// 
 //////////////////////////////////////////////////////////////////////////////////
 
+
 module PC(
-    input logic CLK,
-    input logic RST,
-    input logic PC_WRITE,
-    input logic [2:0] PC_SOURCE,
-    input logic [31:0] JALR,
-    input logic [31:0] BRANCH,
-    input logic [31:0] JAL,
-    input logic [31:0] MTVEC,
-    input logic [31:0] MEPC,
-    output logic [31:0] PC_OUT,
-    output logic [31:0] PC_OUT_INC
+    input PC_RST,
+    input PC_WE,
+    input [31:0] PC_DIN,
+    input CLK,
+    output logic[31:0] PC_COUNT
     );
-    
-    //Create logic for intermediate signals to serve as wires between modules
-    logic [31:0] PC_OUT_PLUS_FOUR, PC_IN;
-    
-    //Assign values to outputs
-    assign PC_OUT_PLUS_FOUR = PC_OUT + 4;
-    assign PC_OUT_INC = PC_OUT_PLUS_FOUR;
-    
-    //Instantiate PC Multiplexer
-    PC_MUX PCMUX(.PC_OUT_PLUS_FOUR(PC_OUT_PLUS_FOUR), .JALR(JALR), .BRANCH(BRANCH),
-     .JAL(JAL), .MTVEC(MTVEC), .MEPC(MEPC), .PC_SOURCE(PC_SOURCE), .PC_MUX_OUT(PC_IN));
-    
-    //Instantiate PC Register
-    PC_REG PCREG(.CLK(CLK), .RST(RST), .D(PC_WRITE), .IN(PC_IN), .OUT(PC_OUT));
-    
+    always_ff @(posedge CLK) begin
+        if(PC_RST) begin    //PC_Rst resets count to 0
+            PC_COUNT<=0;
+        end else if(PC_WE) begin    //otherwise move to next instruction specified by mux
+            PC_COUNT<=PC_DIN;
+        end else begin
+            PC_COUNT<=PC_COUNT; //if write not enabled, and not reseting stay at same instruction
+       end
+    end
 endmodule
