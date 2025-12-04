@@ -57,12 +57,12 @@ module OTTER(input CLK,
      assign memRead1 = 1'b1; 	//Fetch new instruction every cycle
      
      always_ff @(posedge CLK) begin
-                if (!stall) begin
-                    if_de_pc <= pc;
-                    if_de_pc_plus4 <= pc+4;
-                end
-                if (flush_next_if_de || flush_de_ex) if_de_flushed = 1;
-                else if_de_flushed = 0;
+        if (!stall) begin
+            if_de_pc <= pc;
+            if_de_pc_plus4 <= pc+4;
+        end
+        if (flush_next_if_de || flush_de_ex) if_de_flushed = 1;
+        else if_de_flushed = 0;
      end
      
      always_ff @(posedge CLK) begin
@@ -80,21 +80,21 @@ module OTTER(input CLK,
     assign jtype = {{12{if_de_ir[31]}},if_de_ir[19:12],if_de_ir[20],if_de_ir[30:21],1'b0};
     
     CU_DCDR Decoder (
-                    .ir_opcode_dcdr(if_de_ir[6:0]),
-                    .ir_funct_dcdr(if_de_ir[14:12]),
-                    .ir_30_dcdr(if_de_ir[30]),
-                    .int_taken_dcdr(1'b0),
-                    .jump(de_jump),
-                    .branch(de_branch),
-                    .store(de_store),
-                    .regWrite(de_regWrite),
-                    .memWE2(de_memWE2),
-                    .memRDEN2(de_memRDEN2),
-                    .alu_fun_dcdr(de_alu_fun),
-                    .alu_scra_dcdr(alu_srca_sel),
-                    .alu_scrb_dcdr(alu_srcb_sel),
-                    .rf_wr_sel_dcdr(de_rf_wr_sel)
-                    );
+        .ir_opcode_dcdr(if_de_ir[6:0]),
+        .ir_funct_dcdr(if_de_ir[14:12]),
+        .ir_30_dcdr(if_de_ir[30]),
+        .int_taken_dcdr(1'b0),
+        .jump(de_jump),
+        .branch(de_branch),
+        .store(de_store),
+        .regWrite(de_regWrite),
+        .memWE2(de_memWE2),
+        .memRDEN2(de_memRDEN2),
+        .alu_fun_dcdr(de_alu_fun),
+        .alu_scra_dcdr(alu_srca_sel),
+        .alu_scrb_dcdr(alu_srcb_sel),
+        .rf_wr_sel_dcdr(de_rf_wr_sel)
+    );
     
     
     RegFile RegFile (
