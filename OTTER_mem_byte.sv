@@ -1,25 +1,28 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// Company:
+// Company: 
 // Engineer: J. Callenes
-//
+// 
 // Create Date: 01/27/2019 08:37:11 AM
-// Design Name:
+// Design Name: 
 // Module Name: bram_dualport
-// Project Name:
-// Target Devices:
-// Tool Versions:
-// Description:
-//
-// Dependencies:
-//
+// Project Name: 
+// Target Devices: 
+// Tool Versions: 
+// Description: 
+// 
+// Dependencies: 
+// 
 // Revision:
 // Revision 0.01 - File Created
 // Additional Comments:
-//
+// 
 //////////////////////////////////////////////////////////////////////////////////
-                                                                                                                     //func3
-  module OTTER_mem_byte(MEM_CLK,MEM_ADDR1,MEM_ADDR2,MEM_DIN2,MEM_WRITE2,MEM_READ1,MEM_READ2,MEM_DOUT1,MEM_DOUT2,IO_IN,IO_WR,MEM_SIZE,MEM_SIGN);
+
+//port 1 is read only (instructions - used in fetch stage)
+//port 2 is read/write (data - used in writeback stage)
+                                                                                                                                //func3
+ module OTTER_mem_byte(MEM_CLK,MEM_ADDR1,MEM_ADDR2,MEM_DIN2,MEM_WRITE2,MEM_READ1,MEM_READ2,MEM_DOUT1,MEM_DOUT2,IO_IN,IO_WR,MEM_SIZE,MEM_SIGN);
     parameter ACTUAL_WIDTH=14;  //32KB     16K x 32
     parameter NUM_COL = 4;
     parameter COL_WIDTH = 8;
@@ -27,7 +30,7 @@
     input [31:0] MEM_ADDR1;     //Instruction Memory Port
     input [31:0] MEM_ADDR2;     //Data Memory Port
     input MEM_CLK;
-    input [31:0] MEM_DIN2;
+    input [127:0] MEM_DIN2;
     input MEM_WRITE2;
     input MEM_READ1;
     input MEM_READ2;
@@ -38,7 +41,7 @@
     input [1:0] MEM_SIZE;
     input MEM_SIGN;
     output logic [31:0] MEM_DOUT1;
-    output logic [31:0] MEM_DOUT2;
+    output logic [127:0] MEM_DOUT2;
     output logic IO_WR;
     
     logic saved_mem_sign;
@@ -57,105 +60,77 @@
     (* rom_style="{distributed | block}" *) 
     (* ram_decomp = "power" *) logic [31:0] memory [0:2**ACTUAL_WIDTH-1];
     
-    initial begin
-        $readmemh("../hdl/test_all.mem", memory, 0, 2**ACTUAL_WIDTH-1);
-    end 
+//    initial begin
+//        $readmemh("Test_All.mem", memory, 0, 2**ACTUAL_WIDTH-1);
+//    end 
     
-
-    always_comb
-    begin
-        case(MEM_SIZE)
-                0:  weA = 4'b1 << MEM_ADDR2[1:0];   //sb
-                1:  weA =4'b0011 << MEM_ADDR2[1:0];  //sh      //Not supported if across word boundary
-                2:  weA=4'b1111;                    //sw        //Not supported if across word boundary
-                default: weA=4'b0000;
-        endcase
-    end
     integer i,j;
     always_ff @(posedge MEM_CLK) begin
         //PORT 2  //Data
         if(memWrite2)
         begin
-            j=0;
-            for(i=0;i<NUM_COL;i=i+1) begin
-                if(weA[i]) begin
-                        case(MEM_SIZE)
-                            0: memory[memAddr2][i*COL_WIDTH +: COL_WIDTH] <= MEM_DIN2[7:0]; //MEM_DIN2[(3-i)*COL_WIDTH +: COL_WIDTH];
-                            1: begin 
-                                    memory[memAddr2][i*COL_WIDTH +: COL_WIDTH] <= MEM_DIN2[j*COL_WIDTH +: COL_WIDTH];
-                                    j=j+1;
-                               end
-                            2: memory[memAddr2][i*COL_WIDTH +: COL_WIDTH] <= MEM_DIN2[i*COL_WIDTH +: COL_WIDTH];
-                            default:  memory[memAddr2][i*COL_WIDTH +: COL_WIDTH] <= MEM_DIN2[i*COL_WIDTH +: COL_WIDTH];
-                        endcase
-                end
+            // Write 4 words at a time since we are using cache
+            for(j=0; j<4; j=j+1) begin
+               memory[memAddr2+j] <= MEM_DIN2[(32*(4-j))-1 -: 32];
             end
          end
         if(MEM_READ2)
             memOut2 <= memory[memAddr2]; 
         //PORT 1  //Instructions
-        if(MEM_READ1)
-            MEM_DOUT1 <= memory[memAddr1];  
+//        if(MEM_READ1)
+//            MEM_DOUT1 <= memory[memAddr1];  
             
         saved_mem_size <= MEM_SIZE;
         saved_mem_sign <= MEM_SIGN;
         saved_mem_addr2 <=MEM_ADDR2;
     end
     
-    //Check for misalligned or out of bounds memory accesses
-//    assign ERR = ((MEM_ADDR1 >= 2**ACTUAL_WIDTH)|| (MEM_ADDR2 >= 2**ACTUAL_WIDTH)
-//                    || MEM_ADDR1[1:0] != 2'b0 || MEM_ADDR2[1:0] !=2'b0)? 1 : 0; 
-            
-    
-    always_ff @(posedge MEM_CLK)
-        if(MEM_READ2)
-            ioIn_buffer<=IO_IN;       
+//    always_ff @(posedge MEM_CLK)
+//        if(MEM_READ2)
+//            ioIn_buffer<=IO_IN;       
  
 //===  Second cycle ==== Post Processing ==============================
-    logic [31:0] memOut2_sliced=32'b0;
+//    logic [31:0] memOut2_sliced=32'b0;
    
-    always_comb
-    begin
-            memOut2_sliced=32'b0;
+//    always_comb
+//    begin
+//            memOut2_sliced=32'b0;
   
-            case({saved_mem_sign,saved_mem_size})
-                0: case(saved_mem_addr2[1:0])
-                        3:  memOut2_sliced = {{24{memOut2[31]}},memOut2[31:24]};      //lb     //endianess
-                        2:  memOut2_sliced = {{24{memOut2[23]}},memOut2[23:16]};
-                        1:  memOut2_sliced = {{24{memOut2[15]}},memOut2[15:8]};
-                        0:  memOut2_sliced = {{24{memOut2[7]}},memOut2[7:0]};
-                   endcase
+//            case({saved_mem_sign,saved_mem_size})
+//                0: case(saved_mem_addr2[1:0])
+//                        3:  memOut2_sliced = {{24{memOut2[31]}},memOut2[31:24]};      //lb     //endianess
+//                        2:  memOut2_sliced = {{24{memOut2[23]}},memOut2[23:16]};
+//                        1:  memOut2_sliced = {{24{memOut2[15]}},memOut2[15:8]};
+//                        0:  memOut2_sliced = {{24{memOut2[7]}},memOut2[7:0]};
+//                   endcase
                         
-                1: case(saved_mem_addr2[1:0])
-                        3: memOut2_sliced = {{16{memOut2[31]}},memOut2[31:24]};      //lh   //spans two words, NOT YET SUPPORTED!
-                        2: memOut2_sliced = {{16{memOut2[31]}},memOut2[31:16]};
-                        1: memOut2_sliced = {{16{memOut2[23]}},memOut2[23:8]};
-                        0: memOut2_sliced = {{16{memOut2[15]}},memOut2[15:0]};
-                   endcase
-                2: case(saved_mem_addr2[1:0])
-                        1: memOut2_sliced = memOut2[31:8];   //spans two words, NOT YET SUPPORTED!
-                        0: memOut2_sliced = memOut2;      //lw     
-                   endcase
-                4: case(saved_mem_addr2[1:0])
-                        3:  memOut2_sliced = {24'd0,memOut2[31:24]};      //lbu
-                        2:  memOut2_sliced = {24'd0,memOut2[23:16]};
-                        1:  memOut2_sliced = {24'd0,memOut2[15:8]};
-                        0:  memOut2_sliced = {24'd0,memOut2[7:0]};
-                   endcase 
-                5: case(saved_mem_addr2[1:0])
-                        3: memOut2_sliced = {16'd0,memOut2};      //lhu //spans two words, NOT YET SUPPORTED!
-                        2: memOut2_sliced = {16'd0,memOut2[31:16]};
-                        1: memOut2_sliced = {16'd0,memOut2[23:8]};
-                        0: memOut2_sliced = {16'd0,memOut2[15:0]};
-                   endcase
-            endcase
-    end
+//                1: case(saved_mem_addr2[1:0])
+//                        //3: memOut2_sliced = {{16{memOut2[31]}},memOut2[31:24]};      //lh   //spans two words, NOT YET SUPPORTED!
+//                        2: memOut2_sliced = {{16{memOut2[31]}},memOut2[31:16]};
+//                        1: memOut2_sliced = {{16{memOut2[23]}},memOut2[23:8]};
+//                        0: memOut2_sliced = {{16{memOut2[15]}},memOut2[15:0]};
+//                   endcase
+//                2: case(saved_mem_addr2[1:0])
+//                        //1: memOut2_sliced = memOut2[31:8];   //spans two words, NOT YET SUPPORTED!
+//                        0: memOut2_sliced = memOut2;      //lw     
+//                   endcase
+//                4: case(saved_mem_addr2[1:0])
+//                        3:  memOut2_sliced = {24'd0,memOut2[31:24]};      //lbu
+//                        2:  memOut2_sliced = {24'd0,memOut2[23:16]};
+//                        1:  memOut2_sliced = {24'd0,memOut2[15:8]};
+//                        0:  memOut2_sliced = {24'd0,memOut2[7:0]};
+//                   endcase 
+//                5: case(saved_mem_addr2[1:0])
+//                        //3: memOut2_sliced = {16'd0,memOut2};      //lhu //spans two words, NOT YET SUPPORTED!
+//                        2: memOut2_sliced = {16'd0,memOut2[31:16]};
+//                        1: memOut2_sliced = {16'd0,memOut2[23:8]};
+//                        0: memOut2_sliced = {16'd0,memOut2[15:0]};
+//                   endcase
+//            endcase
+//    end
  
     always_comb begin
-        if(saved_mem_addr2 >= 32'h11000000)      
-            MEM_DOUT2 = ioIn_buffer;  
-        else 
-            MEM_DOUT2 = memOut2_sliced;   
+        MEM_DOUT2 = {memory[memAddr2], memory[memAddr2 + 1], memory[memAddr2 + 2], memory[memAddr2 + 3]};   
     end 
 
     always_comb begin

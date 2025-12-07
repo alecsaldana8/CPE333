@@ -39,6 +39,9 @@ module HazardUnit(
     input logic imm_A,
     input logic imm_B,
     input logic de_ex_stalled,
+    input logic ex_mem_stalled,
+    input logic mem_out_stalled,
+    //input logic cache_stall,
     output logic [1:0] pc_mux_out,
     output logic [1:0] jalr_sel,
     output logic [1:0] forward_rs2,
@@ -60,30 +63,33 @@ module HazardUnit(
     forward_rs2 = 0;
     jalr_sel = 0;
     
+    //if (cache_stall) stall = 1;
+    
     
     if (1) begin   // Cannot override x0, so no hazard if rd is 0
     
     // Check one instruction above
-        if (rs1_in == ex_rd && ex_rd != 0 && (ex_rd_reg_write || store) && !imm_A && !de_ex_stalled) begin // RAW 1 instruction above
+        if (rs1_in == ex_rd && ex_rd != 0 && (ex_rd_reg_write || store) && !imm_A && !ex_mem_stalled) begin // RAW 1 instruction above
             alu_sel_1 = 1;
             if (load) stall = 1;
             // Check 2 instructions above
-        end else if (rs1_in == mem_rd && mem_rd_reg_write && mem_rd != 0 && !imm_A && alu_sel_1 != 1) alu_sel_1 = 2; 
+        end else if (rs1_in == mem_rd && mem_rd_reg_write && mem_rd != 0 && !imm_A && alu_sel_1 != 1 && !mem_out_stalled) alu_sel_1 = 2;
         
         
-        if (rs2_in == ex_rd && (ex_rd_reg_write || store) && ex_rd != 0 && (!imm_B || store) && !de_ex_stalled) begin
+        
+        if (rs2_in == ex_rd && (ex_rd_reg_write || store) && ex_rd != 0 && (!imm_B || store) && !ex_mem_stalled) begin
             forward_rs2 = 1;
             if (!imm_B) begin
                 alu_sel_2 = 1;
                 if (load) stall = 1;
             end
             // Check 2 instructions above
-        end else if (rs2_in == mem_rd && (mem_rd_reg_write || store) && mem_rd != 0 && alu_sel_2 != 1) begin
+        end else if (rs2_in == mem_rd && (mem_rd_reg_write || store) && mem_rd != 0 && alu_sel_2 != 1 && !mem_out_stalled) begin
             forward_rs2 = 2;
             if (!imm_B) begin
                 alu_sel_2 = 2;
             end
-        end
+        end 
         
         
     
@@ -93,11 +99,11 @@ module HazardUnit(
     end
     
     // Check forwarding for jalr
-    if (de_rs1_jalr == de_rd && de_rd_reg_write) begin
+    if (de_rs1_jalr == de_rd && de_rd_reg_write && !de_ex_stalled) begin
         jalr_sel = 1;
         if (de_ex_load && jalr_taken) stall = 1;
     end
-    else if (de_rs1_jalr == ex_rd && ex_rd_reg_write) begin
+    else if (de_rs1_jalr == ex_rd && ex_rd_reg_write && !ex_mem_stalled) begin
         jalr_sel = 2; 
         if (load && jalr_taken) stall = 1;
     end
@@ -107,13 +113,11 @@ module HazardUnit(
     if (branch) pc_mux_out = 2;
     else if (jal_taken) pc_mux_out = 3;
     else if (jalr_taken) pc_mux_out = 1;
-    else if (jal_taken || jalr_taken) flush_if_de = 1;
     else pc_mux_out = 0;
     
     if (branch) begin
         flush_if_de = 1; 
         flush_de_ex = 1;
     end else if (jal_taken || jalr_taken) flush_if_de = 1;
-     
     end
 endmodule
